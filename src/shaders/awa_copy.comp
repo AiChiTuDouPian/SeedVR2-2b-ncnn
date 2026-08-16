@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+// 诊断：把 binding0 的输入逐元素拷贝到 binding1 的输出，验证 ncnn 上传/绑定/回读链路。
+layout(push_constant) uniform parameter
+{
+    int LEN;
+} p;
+layout(binding = 0) readonly buffer b_in  { float inb[]; };
+layout(binding = 1) writeonly buffer b_out { float outb[]; };
+void main()
+{
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= p.LEN) return;
+    outb[i] = inb[i];
+}

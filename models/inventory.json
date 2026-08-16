@@ -1,0 +1,2322 @@
+{
+  "ckpt": "F:/Seedvr2/ComfyUI-SeedVR2_VideoUpscaler/models/SEEDVR2/seedvr2_ema_3b_fp16.safetensors",
+  "num_layers": 32,
+  "mm_layers": 10,
+  "blocks": {
+    "0": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.0.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.0.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.0.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.0.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.0.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.0.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.0.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.0.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.0.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.0.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.0.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.0.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.0.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.0.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.0.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.0.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.0.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.0.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.0.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.0.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.0.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.0.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.0.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.0.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.0.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.0.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.0.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.0.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.0.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "1": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.1.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.1.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.1.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.1.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.1.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.1.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.1.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.1.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.1.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.1.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.1.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.1.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.1.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.1.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.1.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.1.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.1.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.1.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.1.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.1.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.1.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.1.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.1.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.1.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.1.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.1.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.1.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.1.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.1.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "2": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.2.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.2.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.2.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.2.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.2.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.2.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.2.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.2.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.2.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.2.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.2.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.2.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.2.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.2.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.2.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.2.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.2.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.2.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.2.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.2.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.2.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.2.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.2.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.2.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.2.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.2.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.2.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.2.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.2.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "3": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.3.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.3.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.3.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.3.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.3.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.3.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.3.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.3.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.3.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.3.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.3.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.3.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.3.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.3.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.3.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.3.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.3.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.3.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.3.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.3.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.3.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.3.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.3.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.3.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.3.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.3.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.3.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.3.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.3.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "4": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.4.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.4.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.4.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.4.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.4.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.4.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.4.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.4.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.4.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.4.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.4.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.4.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.4.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.4.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.4.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.4.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.4.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.4.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.4.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.4.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.4.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.4.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.4.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.4.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.4.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.4.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.4.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.4.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.4.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "5": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.5.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.5.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.5.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.5.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.5.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.5.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.5.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.5.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.5.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.5.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.5.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.5.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.5.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.5.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.5.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.5.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.5.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.5.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.5.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.5.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.5.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.5.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.5.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.5.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.5.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.5.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.5.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.5.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.5.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "6": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.6.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.6.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.6.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.6.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.6.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.6.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.6.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.6.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.6.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.6.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.6.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.6.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.6.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.6.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.6.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.6.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.6.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.6.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.6.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.6.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.6.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.6.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.6.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.6.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.6.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.6.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.6.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.6.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.6.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "7": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.7.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.7.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.7.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.7.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.7.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.7.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.7.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.7.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.7.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.7.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.7.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.7.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.7.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.7.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.7.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.7.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.7.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.7.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.7.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.7.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.7.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.7.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.7.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.7.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.7.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.7.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.7.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.7.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.7.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "8": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.8.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.8.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.8.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.8.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.8.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.8.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.8.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.8.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.8.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.8.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.8.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.8.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.8.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.8.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.8.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.8.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.8.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.8.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.8.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.8.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.8.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.8.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.8.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.8.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.8.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.8.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.8.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.8.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.8.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "9": {
+      "mode": "dual",
+      "num_weights": 29,
+      "keys": {
+        "blocks.9.ada.txt.attn_gate": [
+          2560
+        ],
+        "blocks.9.ada.txt.attn_scale": [
+          2560
+        ],
+        "blocks.9.ada.txt.attn_shift": [
+          2560
+        ],
+        "blocks.9.ada.txt.mlp_gate": [
+          2560
+        ],
+        "blocks.9.ada.txt.mlp_scale": [
+          2560
+        ],
+        "blocks.9.ada.txt.mlp_shift": [
+          2560
+        ],
+        "blocks.9.ada.vid.attn_gate": [
+          2560
+        ],
+        "blocks.9.ada.vid.attn_scale": [
+          2560
+        ],
+        "blocks.9.ada.vid.attn_shift": [
+          2560
+        ],
+        "blocks.9.ada.vid.mlp_gate": [
+          2560
+        ],
+        "blocks.9.ada.vid.mlp_scale": [
+          2560
+        ],
+        "blocks.9.ada.vid.mlp_shift": [
+          2560
+        ],
+        "blocks.9.attn.norm_k.txt.weight": [
+          128
+        ],
+        "blocks.9.attn.norm_k.vid.weight": [
+          128
+        ],
+        "blocks.9.attn.norm_q.txt.weight": [
+          128
+        ],
+        "blocks.9.attn.norm_q.vid.weight": [
+          128
+        ],
+        "blocks.9.attn.proj_out.txt.bias": [
+          2560
+        ],
+        "blocks.9.attn.proj_out.txt.weight": [
+          2560,
+          2560
+        ],
+        "blocks.9.attn.proj_out.vid.bias": [
+          2560
+        ],
+        "blocks.9.attn.proj_out.vid.weight": [
+          2560,
+          2560
+        ],
+        "blocks.9.attn.proj_qkv.txt.weight": [
+          7680,
+          2560
+        ],
+        "blocks.9.attn.proj_qkv.vid.weight": [
+          7680,
+          2560
+        ],
+        "blocks.9.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.9.mlp.txt.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.9.mlp.txt.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.9.mlp.txt.proj_out.weight": [
+          2560,
+          6912
+        ],
+        "blocks.9.mlp.vid.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.9.mlp.vid.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.9.mlp.vid.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "10": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.10.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.10.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.10.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.10.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.10.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.10.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.10.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.10.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.10.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.10.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.10.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.10.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.10.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.10.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.10.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "11": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.11.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.11.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.11.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.11.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.11.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.11.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.11.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.11.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.11.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.11.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.11.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.11.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.11.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.11.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.11.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "12": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.12.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.12.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.12.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.12.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.12.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.12.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.12.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.12.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.12.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.12.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.12.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.12.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.12.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.12.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.12.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "13": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.13.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.13.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.13.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.13.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.13.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.13.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.13.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.13.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.13.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.13.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.13.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.13.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.13.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.13.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.13.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "14": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.14.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.14.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.14.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.14.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.14.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.14.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.14.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.14.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.14.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.14.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.14.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.14.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.14.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.14.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.14.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "15": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.15.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.15.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.15.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.15.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.15.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.15.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.15.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.15.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.15.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.15.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.15.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.15.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.15.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.15.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.15.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "16": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.16.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.16.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.16.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.16.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.16.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.16.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.16.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.16.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.16.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.16.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.16.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.16.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.16.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.16.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.16.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "17": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.17.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.17.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.17.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.17.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.17.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.17.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.17.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.17.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.17.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.17.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.17.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.17.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.17.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.17.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.17.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "18": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.18.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.18.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.18.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.18.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.18.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.18.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.18.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.18.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.18.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.18.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.18.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.18.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.18.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.18.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.18.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "19": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.19.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.19.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.19.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.19.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.19.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.19.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.19.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.19.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.19.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.19.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.19.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.19.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.19.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.19.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.19.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "20": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.20.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.20.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.20.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.20.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.20.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.20.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.20.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.20.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.20.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.20.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.20.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.20.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.20.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.20.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.20.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "21": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.21.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.21.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.21.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.21.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.21.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.21.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.21.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.21.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.21.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.21.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.21.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.21.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.21.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.21.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.21.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "22": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.22.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.22.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.22.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.22.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.22.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.22.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.22.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.22.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.22.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.22.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.22.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.22.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.22.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.22.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.22.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "23": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.23.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.23.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.23.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.23.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.23.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.23.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.23.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.23.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.23.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.23.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.23.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.23.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.23.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.23.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.23.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "24": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.24.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.24.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.24.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.24.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.24.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.24.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.24.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.24.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.24.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.24.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.24.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.24.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.24.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.24.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.24.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "25": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.25.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.25.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.25.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.25.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.25.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.25.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.25.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.25.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.25.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.25.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.25.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.25.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.25.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.25.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.25.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "26": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.26.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.26.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.26.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.26.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.26.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.26.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.26.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.26.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.26.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.26.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.26.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.26.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.26.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.26.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.26.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "27": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.27.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.27.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.27.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.27.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.27.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.27.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.27.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.27.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.27.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.27.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.27.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.27.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.27.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.27.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.27.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "28": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.28.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.28.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.28.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.28.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.28.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.28.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.28.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.28.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.28.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.28.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.28.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.28.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.28.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.28.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.28.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "29": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.29.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.29.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.29.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.29.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.29.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.29.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.29.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.29.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.29.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.29.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.29.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.29.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.29.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.29.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.29.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "30": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.30.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.30.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.30.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.30.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.30.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.30.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.30.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.30.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.30.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.30.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.30.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.30.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.30.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.30.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.30.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    },
+    "31": {
+      "mode": "shared",
+      "num_weights": 15,
+      "keys": {
+        "blocks.31.ada.all.attn_gate": [
+          2560
+        ],
+        "blocks.31.ada.all.attn_scale": [
+          2560
+        ],
+        "blocks.31.ada.all.attn_shift": [
+          2560
+        ],
+        "blocks.31.ada.all.mlp_gate": [
+          2560
+        ],
+        "blocks.31.ada.all.mlp_scale": [
+          2560
+        ],
+        "blocks.31.ada.all.mlp_shift": [
+          2560
+        ],
+        "blocks.31.attn.norm_k.all.weight": [
+          128
+        ],
+        "blocks.31.attn.norm_q.all.weight": [
+          128
+        ],
+        "blocks.31.attn.proj_out.all.bias": [
+          2560
+        ],
+        "blocks.31.attn.proj_out.all.weight": [
+          2560,
+          2560
+        ],
+        "blocks.31.attn.proj_qkv.all.weight": [
+          7680,
+          2560
+        ],
+        "blocks.31.attn.rope.rope.freqs": [
+          21
+        ],
+        "blocks.31.mlp.all.proj_in.weight": [
+          6912,
+          2560
+        ],
+        "blocks.31.mlp.all.proj_in_gate.weight": [
+          6912,
+          2560
+        ],
+        "blocks.31.mlp.all.proj_out.weight": [
+          2560,
+          6912
+        ]
+      }
+    }
+  },
+  "top": {
+    "emb_in.proj_hid.bias": [
+      2560
+    ],
+    "emb_in.proj_hid.weight": [
+      2560,
+      2560
+    ],
+    "emb_in.proj_in.bias": [
+      2560
+    ],
+    "emb_in.proj_in.weight": [
+      2560,
+      256
+    ],
+    "emb_in.proj_out.bias": [
+      15360
+    ],
+    "emb_in.proj_out.weight": [
+      15360,
+      2560
+    ],
+    "txt_in.bias": [
+      2560
+    ],
+    "txt_in.weight": [
+      2560,
+      5120
+    ],
+    "vid_in.proj.bias": [
+      2560
+    ],
+    "vid_in.proj.weight": [
+      2560,
+      132
+    ],
+    "vid_out.proj.bias": [
+      64
+    ],
+    "vid_out.proj.weight": [
+      64,
+      2560
+    ],
+    "vid_out_ada.out_scale": [
+      2560
+    ],
+    "vid_out_ada.out_shift": [
+      2560
+    ],
+    "vid_out_norm.weight": [
+      2560
+    ]
+  }
+}

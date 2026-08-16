@@ -1,0 +1,54 @@
+#version 450
+// 诊断 shader：把 push constant 各字段与部分 buffer 读取直接写回，定位错位。
+layout(push_constant) uniform parameter
+{
+    int DIM;
+    int HEAD_D;
+    int HEADS;
+    int ROPE_ROT;
+    int nwin;
+    int TXT;
+    int Lv;
+    int sumf;
+    float SCALE;
+    float EPS;
+} p;
+
+layout(binding = 0)  readonly buffer b_vqkv { float vqkv[]; };
+layout(binding = 1)  readonly buffer b_tqkv { float tqkv[]; };
+layout(binding = 2)  readonly buffer b_vidx { float vidx[]; };
+layout(binding = 3)  readonly buffer b_cumf { float cumf[]; };
+layout(binding = 4)  readonly buffer b_vfreq { float vfreq[]; };
+layout(binding = 5)  readonly buffer b_tfreq { float tfreq[]; };
+layout(binding = 6)  readonly buffer b_nqv  { float nqv[]; };
+layout(binding = 7)  readonly buffer b_nkv  { float nkv[]; };
+layout(binding = 8)  readonly buffer b_nqt  { float nqt[]; };
+layout(binding = 9)  readonly buffer b_nkt  { float nkt[]; };
+layout(binding = 10) writeonly buffer b_vattn { float vattn[]; };
+layout(binding = 11) writeonly buffer b_toutw { float toutw[]; };
+
+void main()
+{
+    int gz = int(gl_GlobalInvocationID.z);
+    int gy = int(gl_GlobalInvocationID.y);
+    int gx = int(gl_GlobalInvocationID.x);
+    if (gz >= p.nwin || gy >= p.HEADS || gx >= p.Lv) return;
+
+    // 诊断写回：把 push constant 与 buffer 读取直接落盘
+    vattn[0]  = float(p.DIM);
+    vattn[1]  = float(p.HEAD_D);
+    vattn[2]  = float(p.HEADS);
+    vattn[3]  = float(p.ROPE_ROT);
+    vattn[4]  = float(p.nwin);
+    vattn[5]  = float(p.TXT);
+    vattn[6]  = float(p.Lv);
+    vattn[7]  = float(p.sumf);
+    vattn[8]  = p.SCALE;
+    vattn[9]  = p.EPS;
+    vattn[10] = vqkv[0];          // 期望 1.0
+    vattn[11] = vqkv[1];
+    vattn[12] = vidx[0];
+    vattn[13] = cumf[0];
+    vattn[14] = cumf[1];
+    vattn[15] = nqv[0];
+}

@@ -1,0 +1,31 @@
+# ---------- Build output ----------
+build/
+build-cmake/
+
+# ---------- Model weights (large; export or download separately) ----------
+# 以下为 16G+ 权重目录，不入库。请用 export/ 下的脚本重新导出，或自行放置权重。
+models/m5/
+models/m5_nospv/
+models/m6_vae/
+
+# ---------- Compiled shaders (由 src/shaders/*.comp 经 CMake + glslangValidator 重新生成) ----------
+models/m5/*.spv
+
+# ---------- Binaries ----------
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ---------- Test / debug images ----------
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+
+# ---------- Python caches ----------
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

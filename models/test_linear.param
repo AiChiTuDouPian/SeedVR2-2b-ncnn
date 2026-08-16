@@ -1,0 +1,4 @@
+7767517
+2 2
+Input                    in0                      0 1 in0
+InnerProduct             linear_0                 1 1 in0 out0 0=2 1=1 2=6

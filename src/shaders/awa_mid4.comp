@@ -1,0 +1,193 @@
+#version 450
+// 二分隔离：仅做 query 侧（qk_norm + RoPE，含 cos/sin），把 qout 直接写回 vattn，
+// 不做 SDPA 循环。若仍 device-lost -> query 侧/trig 是元凶；否则 -> SDPA 循环是元凶。
+layout(push_constant) uniform parameter
+{
+    int DIM;
+    int HEAD_D;
+    int HEADS;
+    int ROPE_ROT;
+    int nwin;
+    int TXT;
+    int Lv;
+    int sumf;
+    float SCALE;
+    float EPS;
+} p;
+
+layout(binding = 0)  readonly buffer b_vqkv { float vqkv[]; };
+layout(binding = 1)  readonly buffer b_tqkv { float tqkv[]; };
+layout(binding = 2)  readonly buffer b_vidx { float vidx[]; };
+layout(binding = 3)  readonly buffer b_cumf { float cumf[]; };
+layout(binding = 4)  readonly buffer b_vfreq { float vfreq[]; };
+layout(binding = 5)  readonly buffer b_tfreq { float tfreq[]; };
+layout(binding = 6)  readonly buffer b_nqv  { float nqv[]; };
+layout(binding = 7)  readonly buffer b_nkv  { float nkv[]; };
+layout(binding = 8)  readonly buffer b_nqt  { float nqt[]; };
+layout(binding = 9)  readonly buffer b_nkt  { float nkt[]; };
+layout(binding = 10) writeonly buffer b_vattn { float vattn[]; };
+layout(binding = 11) writeonly buffer b_toutw { float toutw[]; };
+
+void main()
+{
+    int gz = int(gl_GlobalInvocationID.z);
+    int gy = int(gl_GlobalInvocationID.y);
+    int gx = int(gl_GlobalInvocationID.x);
+    if (gz >= p.nwin || gy >= p.HEADS) return;
+
+    int wi = gz;
+    int h  = gy;
+    int a  = gx;
+
+    int f_i = int(cumf[wi + 1] + 0.5) - int(cumf[wi] + 0.5);
+    int S   = f_i + p.TXT;
+    if (a >= S) return;
+
+    int DIM  = p.DIM;
+    int QKV  = DIM * 3;
+    int HD   = p.HEAD_D;
+    int base = h * HD;
+
+    bool q_is_vid = (a < f_i);
+    int  q_tok;
+    int  q_fbase;
+    float qin[128];
+    float qnw[128];
+    if (q_is_vid) {
+        int g = int(cumf[wi] + 0.5) + a;
+        q_tok   = int(vidx[g] + 0.5);
+        q_fbase = g * p.ROPE_ROT;
+        for (int d = 0; d < HD; d++) { qin[d] = vqkv[q_tok * QKV + 0 * DIM + base + d]; qnw[d] = nqv[d]; }
+    } else {
+        int ii = a - f_i;
+        q_tok   = ii;
+        q_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
+        for (int d = 0; d < HD; d++) { qin[d] = tqkv[ii * QKV + 0 * DIM + base + d]; qnw[d] = nqt[d]; }
+    }
+    float sq = 0.0;
+    for (int d = 0; d < HD; d++) sq += qin[d] * qin[d];
+    float rq = sqrt(sq / float(HD) + p.EPS);
+    for (int d = 0; d < HD; d++) qin[d] = qin[d] / rq * qnw[d];
+    float qout[128];
+    for (int d = 0; d < HD; d++) qout[d] = qin[d];
+    if (q_is_vid) {
+        for (int k = 0; k < p.ROPE_ROT; k++) {
+            float c = cos(vfreq[q_fbase + k]); float s = sin(vfreq[q_fbase + k]);
+            float rh = (k % 2 == 0) ? -qin[k + 1] : qin[k - 1];
+            qout[k] = qin[k] * c + rh * s;
+        }
+    } else {
+        for (int k = 0; k < p.ROPE_ROT; k++) {
+            float c = cos(tfreq[q_fbase + k]); float s = sin(tfreq[q_fbase + k]);
+            float rh = (k % 2 == 0) ? -qin[k + 1] : qin[k - 1];
+            qout[k] = qin[k] * c + rh * s;
+        }
+    }
+
+    // 直接把 qout 写回（代替 SDPA 输出），用于隔离
+    // 第一遍：求 max（仅 key 读取 + dot，无 exp / 无 value 写回）
+    float mx = -1e30;
+    for (int b = 0; b < S; b++) {
+        bool  k_is_vid = (b < f_i);
+        int   k_tok;
+        int   k_fbase;
+        float kin[128];
+        float knw[128];
+        if (k_is_vid) {
+            int g = int(cumf[wi] + 0.5) + b;
+            k_tok   = int(vidx[g] + 0.5);
+            k_fbase = g * p.ROPE_ROT;
+            for (int d = 0; d < HD; d++) { kin[d] = vqkv[k_tok * QKV + 1 * DIM + base + d]; knw[d] = nkv[d]; }
+        } else {
+            int ii = b - f_i;
+            k_tok   = ii;
+            k_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
+            for (int d = 0; d < HD; d++) { kin[d] = tqkv[ii * QKV + 1 * DIM + base + d]; knw[d] = nkt[d]; }
+        }
+        float sk = 0.0;
+        for (int d = 0; d < HD; d++) sk += kin[d] * kin[d];
+        float rk = sqrt(sk / float(HD) + p.EPS);
+        for (int d = 0; d < HD; d++) kin[d] = kin[d] / rk * knw[d];
+        float kout[128];
+        for (int d = 0; d < HD; d++) kout[d] = kin[d];
+        if (k_is_vid) {
+            for (int k = 0; k < p.ROPE_ROT; k++) {
+                float c = cos(vfreq[k_fbase + k]); float s = sin(vfreq[k_fbase + k]);
+                float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
+                kout[k] = kin[k] * c + rh * s;
+            }
+        } else {
+            for (int k = 0; k < p.ROPE_ROT; k++) {
+                float c = cos(tfreq[k_fbase + k]); float s = sin(tfreq[k_fbase + k]);
+                float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
+                kout[k] = kin[k] * c + rh * s;
+            }
+        }
+        float dot = 0.0;
+        for (int d = 0; d < HD; d++) dot += qout[d] * kout[d];
+        dot *= p.SCALE;
+        if (dot > mx) mx = dot;
+    }
+    // 第二遍：加权累加 v（pr 暂用常数 1.0，隔离 exp 是否为元凶），无 exp / 无 norm
+    float sum = 0.0;
+    float outv[128];
+    for (int d = 0; d < HD; d++) outv[d] = 0.0;
+    for (int b = 0; b < S; b++) {
+        bool  k_is_vid = (b < f_i);
+        int   k_tok;
+        int   k_fbase;
+        float kin[128];
+        float knw[128];
+        if (k_is_vid) {
+            int g = int(cumf[wi] + 0.5) + b;
+            k_tok   = int(vidx[g] + 0.5);
+            k_fbase = g * p.ROPE_ROT;
+            for (int d = 0; d < HD; d++) { kin[d] = vqkv[k_tok * QKV + 1 * DIM + base + d]; knw[d] = nkv[d]; }
+        } else {
+            int ii = b - f_i;
+            k_tok   = ii;
+            k_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
+            for (int d = 0; d < HD; d++) { kin[d] = tqkv[ii * QKV + 1 * DIM + base + d]; knw[d] = nkt[d]; }
+        }
+        float sk = 0.0;
+        for (int d = 0; d < HD; d++) sk += kin[d] * kin[d];
+        float rk = sqrt(sk / float(HD) + p.EPS);
+        for (int d = 0; d < HD; d++) kin[d] = kin[d] / rk * knw[d];
+        float kout[128];
+        for (int d = 0; d < HD; d++) kout[d] = kin[d];
+        if (k_is_vid) {
+            for (int k = 0; k < p.ROPE_ROT; k++) {
+                float c = cos(vfreq[k_fbase + k]); float s = sin(vfreq[k_fbase + k]);
+                float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
+                kout[k] = kin[k] * c + rh * s;
+            }
+        } else {
+            for (int k = 0; k < p.ROPE_ROT; k++) {
+                float c = cos(tfreq[k_fbase + k]); float s = sin(tfreq[k_fbase + k]);
+                float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
+                kout[k] = kin[k] * c + rh * s;
+            }
+        }
+        float dot = 0.0;
+        for (int d = 0; d < HD; d++) dot += qout[d] * kout[d];
+        float pr = exp(dot * p.SCALE - mx);
+        sum += pr;
+        if (k_is_vid) {
+            for (int d = 0; d < HD; d++) outv[d] += pr * vqkv[k_tok * QKV + 2 * DIM + base + d];
+        } else {
+            int ii = b - f_i;
+            for (int d = 0; d < HD; d++) outv[d] += pr * tqkv[ii * QKV + 2 * DIM + base + d];
+        }
+    }
+    for (int d = 0; d < HD; d++) outv[d] /= sum;
+    // 写回
+    if (q_is_vid) {
+        int g = int(cumf[wi] + 0.5) + a;
+        int tok = int(vidx[g] + 0.5);
+        for (int d = 0; d < HD; d++) vattn[tok * DIM + base + d] = outv[d];
+    } else {
+        int ii = a - f_i;
+        int off = (wi * p.TXT + ii) * DIM + base;
+        for (int d = 0; d < HD; d++) toutw[off + d] = outv[d];
+    }
+}
