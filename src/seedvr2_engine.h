@@ -20,9 +20,11 @@ public:
         int resolution = 1080;
         std::string modeldir = "models/m5";
         std::string vaedir = "models/m6_vae";
+        std::string graphdir = "models/m5_graph";   // 阶段3 GPU 常驻整图（空=禁用，走旧分块路径）
         int seed = 42;              // 基准 seed；逐帧用 seed + frame_idx
         bool color_fix = true;
         int precision = 0;          // 存储精度 0=fp32(默认,逐位对齐) 1=fp16 2=bf16
+        bool graph_resident = true; // 低精度图块常驻（多帧加速）；单图/大分辨率显存紧张时 false（逐块释放）
     };
 
     SeedVR2Engine() = default;

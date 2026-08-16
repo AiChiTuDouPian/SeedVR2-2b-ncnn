@@ -1,0 +1,29 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+// awa_coalesce.comp — 文本注意力跨窗口平均（原在 CPU 宿主做的 nwin*TXT*DIM -> TXT*DIM 归约）
+// AWA 主 shader 把每个 window 的 txt 注意力输出写到 toutw[wi,ii,d]；
+// 本 shader 对所有 window 求和取平均，得到最终 tattn[ii,d]。
+// 绑定：binding0 = toutw (nwin*TXT*DIM, 只读)，binding1 = tattn (TXT*DIM, 写)。
+// push_constant: nwin, TXT, DIM。
+
+layout(push_constant) uniform parameter
+{
+    int nwin;
+    int TXT;
+    int DIM;
+} p;
+
+layout(binding = 0) readonly  buffer b_in  { float inw[]; };
+layout(binding = 1) writeonly buffer b_out { float res[]; };
+
+void main()
+{
+    int total = p.TXT * p.DIM;
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= total) return;
+
+    float s = 0.0;
+    for (int w = 0; w < p.nwin; w++)
+        s += inw[w * total + i];
+    res[i] = s / float(p.nwin);
+}

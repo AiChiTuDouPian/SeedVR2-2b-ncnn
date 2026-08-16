@@ -41,6 +41,14 @@ bool SeedVR2Engine::init(const Config& cfg) {
     // ---- DiT 引擎（常驻，跨帧复用）----
     dit_ = std::make_unique<DitVk>();
     if (!dit_->init(cfg_.modeldir, false, cfg_.precision)) return false;
+    dit_->set_graph_persistent(cfg_.graph_resident);   // 单图/显存紧张逐块释放；多帧常驻加速
+
+    // ---- 阶段3：GPU 常驻整图（分块合并计算图）----
+    if (!cfg_.graphdir.empty()) {
+        if (!dit_->load_graph(cfg_.graphdir, (cfg_.precision != 0) ? 1 : 2)) {   // fp32: CH=2（16块×2层，权重峰值1.25GB，1080p/4K 显存安全）   // bf16: 单层块（残差每层 fp32 重置，精度=逐层 bf16）
+            fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
+        }
+    }
 
     ready_ = true;
     return true;
@@ -77,7 +85,8 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
     std::vector<float> latent((size_t)16 * H8 * W8);
     {
         VaeVk vae;
-        if (!vae.init(cfg_.vaedir, H8, W8, cfg_.precision)) return false;
+        // VAE 强制 fp32（低精度 bf16 模式下 VAE 析构会 pool allocator 崩；fp32 VAE 1080p 已验证稳定）
+        if (!vae.init(cfg_.vaedir, H8, W8, 0)) return false;
         ncnn::Mat img_mat(padW, padH, 3);
         memcpy(img_mat.data, x.data(), x.size() * 4);
         ncnn::Mat mean, logvar;
@@ -111,7 +120,7 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
             vp[32] = 1.0f;  // mask
         }
 
-    // ---- 4. DiT（常驻引擎，分块推理，块间 reset_vulkan_device）----
+    // ---- 4. DiT（常驻引擎：graph 整图路径 或 分块推理路径）----
     std::vector<float> sr;
     {
         int token_h = H8 / 2, token_w = W8 / 2;
@@ -121,27 +130,42 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
         dit_->set_windows(wns, wsh);
         fprintf(stderr, "[engine] DiT: Lv=%d nwin(ns=%d,sh=%d)\n", H8 * W8, wns.nwin, wsh.nwin);
 
-        int K = 8;
-        if (const char* ck = getenv("SEEDVR_CHUNK")) K = atoi(ck);
         int Lv = (H8 / 2) * (W8 / 2);  // token 数（2×2 patch 合并）
         std::vector<float> cur_vid = DitVk::patchify_grid(vid_grid, 1, H8, W8);
         std::vector<float> cur_txt = txt_;
-        int done = 0; bool ok = true;
-        while (done < NUM_LAYERS) {
-            int l0 = done;
-            int l1 = (done + K < NUM_LAYERS) ? done + K : NUM_LAYERS;
-            bool do_init = (l0 == 0);
-            bool is_final = (l1 >= NUM_LAYERS);
-            std::vector<float> vout, tout, sro;
-            if (!dit_->forward_latent(cur_vid, Lv, cur_txt, TXT_LEN, TIMESTEP, l0, l1, do_init, is_final, vout, tout, sro)) {
-                ok = false; break;
+        if (dit_->graph_ready()) {
+            // 阶段3：GPU 常驻整图（8 块 × 4 层合并计算图），块内零 CPU 往返
+            auto tg0 = std::chrono::high_resolution_clock::now();
+            std::vector<float> sro_raw;
+            if (!dit_->forward_graph(cur_vid, Lv, cur_txt, TXT_LEN, TIMESTEP, sro_raw)) {
+                fprintf(stderr, "[engine] DiT graph 推理失败\n"); return false;
             }
-            if (!sro.empty()) sr = DitVk::unpatchify_latent(sro, 1, H8, W8);
-            else { cur_vid = vout; cur_txt = tout; }
-            done = l1;
-            if (done < NUM_LAYERS) dit_->reset_vulkan_device();
+            // ★ graph 返回 out0 原始输出 (Lv,64)（patch 空间）；必须 unpatchify 成
+            //   (H8*W8,16) channel-last 才能与旧路径 sr 语义一致（否则布局错位 -> 图失真）
+            sr = DitVk::unpatchify_latent(sro_raw, 1, H8, W8);
+            auto tg1 = std::chrono::high_resolution_clock::now();
+            fprintf(stderr, "[perf] DiT graph(32层) = %.3f s\n",
+                    std::chrono::duration<double>(tg1 - tg0).count());
+        } else {
+            int K = 8;
+            if (const char* ck = getenv("SEEDVR_CHUNK")) K = atoi(ck);
+            int done = 0; bool ok = true;
+            while (done < NUM_LAYERS) {
+                int l0 = done;
+                int l1 = (done + K < NUM_LAYERS) ? done + K : NUM_LAYERS;
+                bool do_init = (l0 == 0);
+                bool is_final = (l1 >= NUM_LAYERS);
+                std::vector<float> vout, tout, sro;
+                if (!dit_->forward_latent(cur_vid, Lv, cur_txt, TXT_LEN, TIMESTEP, l0, l1, do_init, is_final, vout, tout, sro)) {
+                    ok = false; break;
+                }
+                if (!sro.empty()) sr = DitVk::unpatchify_latent(sro, 1, H8, W8);
+                else { cur_vid = vout; cur_txt = tout; }
+                done = l1;
+                if (done < NUM_LAYERS) dit_->reset_vulkan_device();
+            }
+            if (!ok) { fprintf(stderr, "[engine] DiT 推理失败\n"); return false; }
         }
-        if (!ok) { fprintf(stderr, "[engine] DiT 推理失败\n"); return false; }
         if (sr.empty()) { fprintf(stderr, "[engine] 未产出 sr\n"); return false; }
     }
     auto tp3 = std::chrono::high_resolution_clock::now();
@@ -159,10 +183,13 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
             }
 
     // ---- 6. VAE decode（独立作用域，decode 后立即拷贝输出再释放）----
+    // 低精度模式：DiT 权重常驻（~5.5GB bf16）会挤爆 VAE decode 显存 -> decode 前主动释放 graph
+    if (dit_->graph_ready()) dit_->release_graph();
     std::vector<float> y_data((size_t)3 * padH * padW);
     {
         VaeVk vae;
-        if (!vae.init(cfg_.vaedir, H8, W8, cfg_.precision)) return false;
+        // VAE 强制 fp32（低精度 bf16 模式下 VAE 析构会 pool allocator 崩；fp32 VAE 1080p 已验证稳定）
+        if (!vae.init(cfg_.vaedir, H8, W8, 0)) return false;
         ncnn::Mat z_mat(W8, H8, 16);
         memcpy(z_mat.data, z_dec.data(), z_dec.size() * 4);
         ncnn::Mat y;

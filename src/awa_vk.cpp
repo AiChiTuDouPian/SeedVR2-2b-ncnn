@@ -19,7 +19,7 @@ static const float EPS = 1e-5f;
 
 AwaVk::AwaVk() {}
 AwaVk::~AwaVk() {
-    if (pipe) { delete pipe; pipe = nullptr; }
+    release();
 }
 
 static std::vector<uint32_t> read_spv(const std::string& path) {
@@ -41,6 +41,19 @@ bool AwaVk::init(ncnn::VulkanDevice* vkdev, const std::string& spv_path) {
     if (pipe->create(spv.data(), spv.size() * 4, std::vector<ncnn::vk_specialization_type>()) != 0) {
         fprintf(stderr, "[AwaVk] FAIL create pipeline from %s\n", spv_path.c_str());
         return false;
+    }
+    // init shader（vattn 未覆盖 token 清零；与 awa.spv 同目录的 awa_init.spv）
+    {
+        size_t slash = spv_path.find_last_of("/\\");
+        std::string dir = (slash == std::string::npos) ? "" : spv_path.substr(0, slash + 1);
+        std::vector<uint32_t> ispv = read_spv(dir + "awa_init.spv");
+        if (ispv.empty()) { fprintf(stderr, "[AwaVk] 无 awa_init.spv（未覆盖 token 将含脏数据）\n"); return true; }
+        init_pipe = new ncnn::Pipeline(vkdev);
+        init_pipe->set_local_size_xyz(128, 1, 1);
+        if (init_pipe->create(ispv.data(), ispv.size() * 4, std::vector<ncnn::vk_specialization_type>()) != 0) {
+            fprintf(stderr, "[AwaVk] FAIL create init pipeline\n");
+            delete init_pipe; init_pipe = nullptr;
+        }
     }
     fprintf(stderr, "[AwaVk] init ok (spv=%s, %zu dwords)\n", spv_path.c_str(), spv.size());
     return true;
@@ -121,6 +134,13 @@ bool AwaVk::forward(const std::vector<float>& vqkv, const std::vector<float>& tq
     vk_toutw.create((size_t)nwin * TXT * DIM, (size_t)4, blob_alloc ? blob_alloc : vkdev->acquire_blob_allocator());
     fprintf(stderr, "[AwaVk] upload/alloc done  Lv=%d TXT=%d nwin=%d sumf=%d vattn.w=%d toutw.w=%d\n",
             Lv, TXT, nwin, sumf, vk_vattn.w, vk_toutw.w);
+    // 未覆盖 token（不在任何窗口内）无线程写入 -> 显式清零（与 CPU 参考 std::vector 清零一致）
+    if (init_pipe) {
+        std::vector<ncnn::VkMat> ib(1); ib[0] = vk_vattn;
+        std::vector<ncnn::vk_constant_type> ic(1); ic[0].i = Lv * DIM;
+        ncnn::VkMat idisp; idisp.w = Lv * DIM; idisp.h = 1; idisp.c = 1;   // 元素数语义
+        cmd.record_pipeline(init_pipe, ib, ic, idisp);
+    }
 
     std::vector<ncnn::VkMat> bindings(12);
     bindings[0]  = vk_vqkv;

@@ -7,6 +7,8 @@ build-cmake/
 models/m5/
 models/m5_nospv/
 models/m6_vae/
+# 合并计算图权重块（fp32 16块 + bf16 32块 + f16 32块，53G+）；由 export/export_dit_graph.py 重新生成，不入库
+models/m5_graph/
 
 # ---------- Compiled shaders (由 src/shaders/*.comp 经 CMake + glslangValidator 重新生成) ----------
 models/m5/*.spv
@@ -29,3 +31,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# ---------- Test / debug logs ----------
+log_*.txt

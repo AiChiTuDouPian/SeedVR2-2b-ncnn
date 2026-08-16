@@ -1,0 +1,25 @@
+#version 450
+
+// fp32 -> fp16（flat 线性布局；输出按 uint 打包：每 uint 2 个 half）
+// packHalf2x16 自带 round-to-nearest-even（含溢出->inf / 次正规数处理）。
+// 读-改-写打包：gid 偶数写低 16 位，奇数写高 16 位（与 cast_f32_bf16 同构）。
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer b_in  { float inb[]; };
+layout(binding = 1)          buffer b_out { uint o[]; };   // 读-改-写打包，不能 writeonly
+
+layout(push_constant) uniform parameter
+{
+    int total;
+} p;
+
+void main()
+{
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid >= p.total) return;
+    uint h = packHalf2x16(vec2(inb[gid], 0.0)) & 0xFFFFu;   // 低 16 位 = half(inb[gid])
+    if ((gid & 1) == 1)
+        o[gid >> 1] = (o[gid >> 1] & 0xFFFFu) | (h << 16);
+    else
+        o[gid >> 1] = (o[gid >> 1] & 0xFFFF0000u) | h;
+}

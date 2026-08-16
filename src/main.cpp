@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
     int seed = 42;
     bool color_fix = true;
     int precision = 0;   // 0=fp32(默认) 1=fp16 2=bf16
+    std::string graphdir = "models/m5_graph";
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--resolution") && i + 1 < argc) resolution = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--modeldir") && i + 1 < argc) modeldir = argv[++i];
@@ -68,6 +69,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-colorfix")) color_fix = false;
         else if (!strcmp(argv[i], "--fp16")) precision = 1;
         else if (!strcmp(argv[i], "--bf16")) precision = 2;
+        else if (!strcmp(argv[i], "--no-graph")) graphdir = "";
+        else if (!strcmp(argv[i], "--graphdir") && i + 1 < argc) graphdir = argv[++i];
     }
 
     // 判断输入类型：目录 = 帧序列，文件 = 单张图片
@@ -83,6 +86,9 @@ int main(int argc, char** argv) {
     cfg.seed = seed;
     cfg.color_fix = color_fix;
     cfg.precision = precision;
+    cfg.graphdir = graphdir;
+    // 单图：graph 块逐块释放（大分辨率显存安全）；帧序列：低精度块常驻（帧间零加载加速）
+    cfg.graph_resident = is_dir;
     if (!engine.init(cfg)) return 1;
 
     if (!is_dir) {

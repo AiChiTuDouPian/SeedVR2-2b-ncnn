@@ -9,6 +9,7 @@
 #include <list>
 #include <cstdint>
 #include "awa_vk.h"
+#include "awa_layer.h"   // 阶段3 整图：块 Net 内 AWA 层几何注入
 
 namespace ncnn { class Net; class VulkanDevice; }
 
@@ -92,6 +93,20 @@ public:
     std::vector<float> lin(const std::string& base, const float* x, int Ln,
                            int in_dim, int out_dim);
 
+    // ---- 阶段3：GPU 常驻整图（分块合并计算图，消除层间 CPU 往返）----
+    // graph_dir: 含 dit_block_0..N-1.param/.bin 的目录（export_dit_graph.py 生成）
+    // chunk: 每块层数（32 层默认 4 层/块 × 8 块；系统 RAM 17GB 限制，8 层/块会 OOM）
+    bool load_graph(const std::string& graph_dir, int chunk = 4);
+    bool graph_ready() const { return graph_loaded_; }
+    // 低精度图块是否常驻（true=帧间零加载加速；false=逐块释放，大分辨率显存紧张时用）
+    void set_graph_persistent(bool p) { graph_persistent_ = p; }
+    // 整图前向（全 32 层一次）：vid_patch(Lv,132) + txt(TXT,5120) -> out_sr(Lv,64)
+    bool forward_graph(const std::vector<float>& vid_patch, int Lv,
+                       const std::vector<float>& txt, int TXT, float timestep,
+                       std::vector<float>& out_sr);
+    // 卸载图（释放块 Net 显存/权重；engine 析构或切换分辨率前调用）
+    void release_graph();
+
 private:
     bool cache_file(const std::string& base);                 // 读 param+bin 进内存
     // 单次 Linear（Vulkan）：通过 get_net 取/建按 base 缓存的 ncnn::Net（LRU 逐出，见 net_cache），
@@ -130,6 +145,24 @@ private:
     std::vector<RawBranch> bvid_raw, btxt_raw;
 
     Win win_ns, win_sh;
+
+    // ---- 阶段3 GPU 整图成员 ----
+    std::vector<std::unique_ptr<ncnn::Net>> gblocks_;   // 块 Net（0..NB-1）
+    std::string graph_dir_;
+    int gblock_chunk_ = 4;
+    int gblock_count_ = 0;      // NB = NUM_LAYERS / chunk
+    bool graph_loaded_ = false;
+    bool graph_persistent_ = true;   // 低精度块常驻（多帧加速）；单图/大分辨率显存紧张时可关
+    // 窗口注入缓存（同分辨率帧序列只注入一次；窗口变化时重新注入）
+    bool win_injected_ = false;
+    int win_sig_ = -1;          // 当前已注入窗口的签名（t*1e6+h*1e4+w*100+nwin 类哈希）
+    std::vector<int> gblock_geom_sig_;   // 每块已注入的窗口签名（-1=未注入；按需加载后独立跟踪）
+    // 每帧一次：计算全部 ada 输入（emb + branch 常数）
+    std::vector<std::vector<float>> compute_ada(const std::vector<float>& emb, int n_layers) const;
+    // 为块 b 的 AWA 层注入窗口几何（每块独立跟踪签名；窗口变化时重新注入）
+    void inject_graph_geometry(int b);
+    // 按需加载单个块 Net（未加载时；显存 16GB 无法 8 块 fp32 常驻，fp16 常驻）
+    bool graph_load_block(int b);
 
     AwaVk awa;   // 自定义 Vulkan AWA 模块（窗口注意力 GPU 加速）
 };

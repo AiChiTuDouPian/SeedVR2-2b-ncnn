@@ -1,0 +1,20 @@
+#version 450
+
+// bf16 -> fp32（flat 线性布局；bf16 2 字节/元素，按 uint 打包读：每 uint 含 2 个 bf16）
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly  buffer b_in  { uint inb[]; };
+layout(binding = 1) writeonly buffer b_out { float o[]; };
+
+layout(push_constant) uniform parameter
+{
+    int total;
+} p;
+
+void main()
+{
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid >= p.total) return;
+    uint u = (gid & 1) == 1 ? (inb[gid >> 1] >> 16) : (inb[gid >> 1] & 0xFFFFu);
+    o[gid] = uintBitsToFloat(u << 16);
+}

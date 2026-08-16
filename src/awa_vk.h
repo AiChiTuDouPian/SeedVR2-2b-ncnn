@@ -22,7 +22,10 @@ public:
     bool ready() const { return pipe != nullptr; }
 
     // 显式释放 pipeline（销毁 GPU 设备前必须调用，否则悬空引用 -> SIGSEGV）
-    void release() { if (pipe) { delete pipe; pipe = nullptr; } }
+    void release() {
+        if (pipe) { delete pipe; pipe = nullptr; }
+        if (init_pipe) { delete init_pipe; init_pipe = nullptr; }
+    }
 
     // 复用 DitVk 缓存的 blob/staging allocator（避免每次 acquire 从池里取新实例导致显存泄漏）。
     // 必须在 init 之后、forward 之前调用。
@@ -43,6 +46,7 @@ public:
 private:
     ncnn::VulkanDevice* vkdev = nullptr;
     ncnn::Pipeline*     pipe  = nullptr;
+    ncnn::Pipeline*     init_pipe = nullptr;   // awa_init.spv：vattn 未覆盖 token 清零
     ncnn::VkAllocator*  blob_alloc    = nullptr;   // 复用 DitVk 缓存实例
     ncnn::VkAllocator*  staging_alloc = nullptr;
 };

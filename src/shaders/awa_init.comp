@@ -1,0 +1,19 @@
+#version 450
+
+// AWA 输出清零：未覆盖 token（不在任何窗口内）无线程写入，必须先清零
+// 用法：dispatcher.w = 元素数（ncnn 语义），local_size 128
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) buffer b_out { float o[]; };
+
+layout(push_constant) uniform parameter
+{
+    int total;
+} p;
+
+void main()
+{
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid < p.total)
+        o[gid] = 0.0f;
+}

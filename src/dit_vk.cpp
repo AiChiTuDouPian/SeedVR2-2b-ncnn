@@ -95,9 +95,10 @@ Win load_win(const char* path, int txt_len) {
 DitVk::DitVk() {}
 DitVk::~DitVk() {
     // 必须先释放所有引用 GPU 设备的资源，再销毁 GPU 实例，否则 use-after-free -> SIGSEGV。
-    // 顺序很关键：net_cache（含权重分配器/pipeline）与 awa pipeline 都要在 destroy_gpu_instance 之前析构。
-    net_cache.clear();                 // 析构所有缓存的 ncnn::Net -> 释放权重 VkWeightAllocator + pipeline
-    awa.release();                     // 删除 AWA compute pipeline（引用 device）
+    // 顺序很关键：net_cache（含权重分配器/pipeline）、graph 块 Net、awa pipeline 都要在 destroy_gpu_instance 之前析构。
+    release_graph();                 // 阶段3：析构块 Net（含 AwaLayer pipeline / 权重 VkAllocator）
+    net_cache.clear();               // 析构所有缓存的 ncnn::Net -> 释放权重 VkWeightAllocator + pipeline
+    awa.release();                   // 删除 AWA compute pipeline（引用 device）
     blob_alloc = nullptr;
     staging_alloc = nullptr;
     if (vkdev) ncnn::destroy_gpu_instance();

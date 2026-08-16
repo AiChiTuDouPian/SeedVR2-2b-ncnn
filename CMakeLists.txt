@@ -52,12 +52,12 @@ add_seedvr2_exe(seedvr2_verify_dit_dbg0 src/verify_dit_dbg0.cpp)
 add_seedvr2_exe(seedvr2_verify_dit src/verify_dit.cpp)
 
 # M6 (Vulkan) — SeedVR2 NaDiT 推理引擎（GEMM 走 ncnn Vulkan Net）
-add_library(seedvr2_dit STATIC src/dit_vk.cpp src/awa_vk.cpp src/seedvr2_pipeline.cpp)
+add_library(seedvr2_dit STATIC src/dit_vk.cpp src/awa_vk.cpp src/awa_layer.cpp src/cast_bf16_layer.cpp src/dit_graph.cpp src/seedvr2_pipeline.cpp)
 target_include_directories(seedvr2_dit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${NCNN_DIR}/include ${VULKAN_SDK}/Include)
 target_link_libraries(seedvr2_dit ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
 target_compile_options(seedvr2_dit PRIVATE -fopenmp -O2)
 
-# ---------- AWA 自定义 Vulkan shader 编译（glslangValidator -> awa.spv） ----------
+# ---------- AWA 自定义 Vulkan shader 编译（glslangValidator -> models/m5/*.spv） ----------
 find_program(GLSLANG_VALIDATOR "glslangValidator"
     PATHS "C:/VulkanSDK/1.4.350.0/Bin" "C:/VulkanSDK/1.3.0.0/Bin")
 if(GLSLANG_VALIDATOR)
@@ -69,13 +69,45 @@ if(GLSLANG_VALIDATOR)
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa.comp
         COMMENT "Compile awa.comp -> models/m5/awa.spv"
     )
-    add_custom_target(awa_spv ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa.spv)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_coalesce.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_coalesce.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_coalesce.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_coalesce.comp
+        COMMENT "Compile awa_coalesce.comp -> models/m5/awa_coalesce.spv"
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_init.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_init.comp
+        COMMENT "Compile awa_init.comp -> models/m5/awa_init.spv"
+    )
+    add_custom_target(awa_spv ALL DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_coalesce.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv)
 else()
-    message(WARNING "glslangValidator 未找到；需手动把 awa.spv 放到 models/m5/")
+    message(WARNING "glslangValidator 未找到；需手动把 awa.spv / awa_coalesce.spv / awa_init.spv 放到 models/m5/")
 endif()
 # 验证：Vulkan 前向数值对拍 ref_vid_out.bin
 add_executable(seedvr2_dit_vk_test src/dit_vk_test.cpp)
 target_link_libraries(seedvr2_dit_vk_test seedvr2_dit)
+# 阶段1 单测：AwaLayer（自定义 ncnn::Layer）vs AwaVk 参考 cos=1.0
+add_executable(seedvr2_test_awa_layer src/test_awa_layer.cpp)
+target_link_libraries(seedvr2_test_awa_layer seedvr2_dit)
+# 阶段0 探针：VkMat 连续执行链路（input(VkMat)->extract(VkMat,cmd) 全程 GPU）
+add_executable(seedvr2_probe_vkmat_io src/probe_vkmat_io.cpp)
+target_link_libraries(seedvr2_probe_vkmat_io seedvr2_dit)
+# 阶段2 验证：整图 dit_graph vs forward_latent cos=1.0
+add_executable(seedvr2_quick_binop src/quick_binop.cpp)
+target_link_libraries(seedvr2_quick_binop seedvr2_dit)
+add_executable(seedvr2_min_awa_load src/min_awa_load.cpp)
+target_link_libraries(seedvr2_min_awa_load seedvr2_dit)
+add_executable(seedvr2_test_dit_graph src/test_dit_graph.cpp src/awa_window.cpp)
+target_link_libraries(seedvr2_test_dit_graph seedvr2_dit)
 # 端到端 exe（文件 IO：读 vid_grid/txt/windows → 写 sr_latent）
 add_executable(seedvr2_dit_vk_run src/dit_vk_run.cpp)
 target_link_libraries(seedvr2_dit_vk_run seedvr2_dit)
