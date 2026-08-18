@@ -68,6 +68,48 @@ bool DitVk::graph_load_block(int b)
     return true;
 }
 
+// 加载单 32 层整图 Net（dit_graph.param/bin）。
+// 权重 bin 是 fp16（type=1），但按 Net opt 决定的中间激活精度运行：
+//   --bf16（precision=2）：激活 bf16（防 1080p 大激活 fp16 溢出），权重仍 fp16 读（权重不会 >65504）
+//   --fp16（precision=1）：权重+激活均 fp16（360p 小激活可用，1080p 可能溢出）
+//   fp32（precision=0）：单 Net fp32 权重 20GB 超 16GB 显存，不支持。
+bool DitVk::load_single_net()
+{
+    if (single_net_) return true;
+    // fp32 单 Net 仅禁止「全 32 层」（20GB 权重超 16GB 显存）；小单 Net（如 4 层 1.3GB）
+    // 用 fp32 可做精确数值对拍（与逐层参考路径同精度）。全层请改用 --bf16/--fp16。
+    if (precision_ == 0 && single_nlayers_ >= NUM_LAYERS) {
+        fprintf(stderr, "[graph] 单 Net fp32 仅支持 < 全层（32 层 fp32 权重 20GB 超 16GB 显存）；请用 --bf16/--fp16 或更小单 Net\n");
+        return false;
+    }
+    std::string pfull = graph_dir_ + single_prefix_ + ".param";
+    std::ifstream fp(pfull);
+    if (!fp) { fprintf(stderr, "[graph] 缺 %s\n", pfull.c_str()); return false; }
+    std::vector<unsigned char> bbin = graph_read_bin(graph_dir_ + single_prefix_ + ".bin");
+    if (bbin.empty()) { fprintf(stderr, "[graph] 缺 %s\n", (graph_dir_ + single_prefix_ + ".bin").c_str()); return false; }
+    single_net_.reset(new ncnn::Net);
+    single_net_->set_vulkan_device(vkdev);
+    single_net_->opt.use_vulkan_compute = true;
+    bool bf16 = (precision_ == 2);
+    bool f16  = (precision_ == 1);
+    single_net_->opt.use_bf16_storage = bf16;
+    single_net_->opt.use_bf16_packed  = bf16;
+    single_net_->opt.use_fp16_storage = f16;
+    single_net_->opt.use_fp16_packed  = f16;
+    single_net_->opt.use_fp16_arithmetic = false;   // fp32 累加（fp16/bf16 累加器会溢出）
+    single_net_->opt.lightmode = false;
+    single_net_->opt.blob_vkallocator = blob_alloc;
+    single_net_->opt.workspace_vkallocator = blob_alloc;
+    single_net_->opt.staging_vkallocator = staging_alloc;
+    single_net_->register_custom_layer("AWA", AwaLayer::creator);
+    single_net_->register_custom_layer("Bf16Cast", Bf16CastLayer::creator);
+    if (single_net_->load_param(pfull.c_str()) != 0) { fprintf(stderr, "[graph] single load_param FAIL\n"); return false; }
+    if (single_net_->load_model(bbin.data()) < 0) { fprintf(stderr, "[graph] single load_model FAIL\n"); return false; }
+    fprintf(stderr, "[graph] single Net 加载 OK (prefix=%s, %d层, precision=%d, 权重常驻 + %s激活)\n",
+            single_prefix_.c_str(), single_nlayers_, precision_, bf16 ? "bf16" : "fp16");
+    return true;
+}
+
 bool DitVk::load_graph(const std::string& graph_dir, int chunk)
 {
     if (graph_loaded_) release_graph();
@@ -88,6 +130,7 @@ bool DitVk::load_graph(const std::string& graph_dir, int chunk)
         if (!fp) { fprintf(stderr, "[graph] 缺 %s（需先跑 export_dit_graph.py 生成块图；fp16 需 f16 变体）\n", (graph_dir_ + pname).c_str()); return false; }
     }
     graph_loaded_ = true;
+    gblock_run_ = gblock_count_;   // 默认跑全部块；set_run_blocks(n) 可限制只跑前 n 块（用于小单 Net 同层对比）
     win_injected_ = false;
     fprintf(stderr, "[graph] ready (%d blocks, chunk=%d; 块 Net 按需加载+用完释放)\n", gblock_count_, chunk);
     return true;
@@ -96,6 +139,8 @@ bool DitVk::load_graph(const std::string& graph_dir, int chunk)
 void DitVk::release_graph()
 {
     gblocks_.clear();
+    single_net_.reset();
+    single_loaded_ = false;
     graph_loaded_ = false;
     win_injected_ = false;
 }
@@ -128,10 +173,12 @@ std::vector<std::vector<float>> DitVk::compute_ada(const std::vector<float>& emb
 //   注入无效，AWA 会 fallback 到 win bin（nwin=8/3200 网格）导致窗口错乱 -> 黑图
 void DitVk::inject_graph_geometry(int b)
 {
-    if (b < 0 || b >= (int)gblocks_.size() || !gblocks_[b]) return;
+    ncnn::Net* net = single_loaded_ ? single_net_.get()
+                                     : (b >= 0 && b < (int)gblocks_.size() ? gblocks_[b].get() : nullptr);
+    if (!net) return;
     int sig = win_ns.t * 1000000 + win_ns.h * 10000 + win_ns.w * 100 + win_ns.nwin;
     sig = sig * 1000 + win_ns.txt_len + (win_sh.nwin << 8);
-    if ((int)gblock_geom_sig_.size() <= b) gblock_geom_sig_.resize(gblock_count_, -1);
+    if ((int)gblock_geom_sig_.size() <= b) gblock_geom_sig_.resize(b + 1, -1);
     if (gblock_geom_sig_[b] == sig) return;   // 该块已用当前窗口注入过
     // Win -> 几何（与 awa_vk.cpp / test 同公式）
     auto win_to_geom = [&](const Win& w, std::vector<float>& vidx, std::vector<float>& cumf,
@@ -152,8 +199,8 @@ void DitVk::inject_graph_geometry(int b)
     std::vector<float> gv1, gc1, gf1, gt1, gv2, gc2, gf2, gt2;
     win_to_geom(win_ns, gv1, gc1, gf1, gt1);
     win_to_geom(win_sh, gv2, gc2, gf2, gt2);
-    int Lv = (int)(win_ns.h * win_ns.w);   // 单帧 token 数（t=1）
-    for (auto* l : gblocks_[b]->mutable_layers()) {
+        int Lv = (int)(win_ns.h * win_ns.w);   // 单帧 token 数（t=1）
+    for (auto* l : net->mutable_layers()) {
         if (l->type != "AWA") continue;
         AwaLayer* a = (AwaLayer*)l;
         if (a->win_type() == 1)
@@ -174,7 +221,8 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
     if (!graph_loaded_) { fprintf(stderr, "[graph] 未加载\n"); return false; }
 
     std::vector<float> emb = time_embedding(timestep);
-    std::vector<std::vector<float>> ada = compute_ada(emb, NUM_LAYERS);
+    int nlayer_ada = single_loaded_ ? single_nlayers_ : NUM_LAYERS;
+    std::vector<std::vector<float>> ada = compute_ada(emb, nlayer_ada);
     std::vector<float> fin_sc(DIM), fin_sh(DIM);
     for (int d = 0; d < DIM; d++) {
         fin_sc[d] = emb[d * 3 + 1] + Wvoa_sc[d];
@@ -182,20 +230,27 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
     }
 
     std::vector<float> vid_cur = vid_patch, txt_cur = txt;
-    int nb = gblock_count_, chunk = gblock_chunk_;
-    // 常驻仅限低精度（bf16/fp16 权重 <16GB 显存，帧间零加载）；fp32 权重 20GB 超显存必须逐块释放。
-    // 显存紧张时（1080p 大激活/单图）可设 SEEDVR_GRAPH_RELEASE=1 或 set_graph_persistent(false) 逐块释放。
+    int nb, chunk;
+    if (single_loaded_) { nb = 1; chunk = single_nlayers_; }   // 单 Net：整图 1 个 Net，无块间
+    else { nb = gblock_run_; chunk = gblock_chunk_; }
     bool persistent = graph_persistent_ && (precision_ != 0) && !getenv("SEEDVR_GRAPH_RELEASE");
+    if (single_loaded_) persistent = true;   // 单 Net 10GB 权重必须常驻（本任务核心：消除块间 CPU 往返）
     for (int b = 0; b < nb; b++)
     {
         int l0 = b * chunk, l1 = l0 + chunk;
-        // ⚠️ 上一块的 Net 在「其 ex/cmd 已析构后」才释放：Extractor 持有 Net 内部对象引用，
-        // 若 Net 先析构（块末 reset）而 ex 后析构（块作用域末）-> 野指针 -> pool allocator destroyed too early。
-        // 故 reset 挪到下一轮开头（上一轮的 ex/cmd 已在块末析构）。
-        if (b > 0 && !persistent) gblocks_[b - 1].reset();
-        if (!graph_load_block(b)) { fprintf(stderr, "[graph] block %d 加载失败\n", b); return false; }
-        inject_graph_geometry(b);   // 块加载后必须注入（否则 fallback win bin 窗口错乱 -> 黑图）
-        ncnn::Net* bn = gblocks_[b].get();
+        ncnn::Net* bn;
+        if (single_loaded_) {
+            bn = single_net_.get();
+            if (b == 0) inject_graph_geometry(0);   // 单 Net 含 32 个 AWA，一次注入全部
+        } else {
+            // ⚠️ 上一块 Net 在「其 ex/cmd 已析构后」才释放：Extractor 持有 Net 内部对象引用，
+            // 若 Net 先析构（块末 reset）而 ex 后析构（块作用域末）-> 野指针 -> pool destroyed too early。
+            // 故 reset 挪到下一轮开头（上一轮 ex/cmd 已在块末析构）。
+            if (b > 0 && !persistent) gblocks_[b - 1].reset();
+            if (!graph_load_block(b)) { fprintf(stderr, "[graph] block %d 加载失败\n", b); return false; }
+            inject_graph_geometry(b);   // 块加载后必须注入（否则 fallback win bin 窗口错乱 -> 黑图）
+            bn = gblocks_[b].get();
+        }
         ncnn::VkCompute cmd(vkdev);
         ncnn::Extractor ex = bn->create_extractor();
         auto upload = [&](const char* name, const std::vector<float>& data, int dim, int h) {
@@ -285,6 +340,29 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
         // 显存紧张时（1080p 大激活）可设 SEEDVR_GRAPH_RELEASE=1 强制逐块释放。
         // 块释放时机：下一轮循环开头（本块的 ex/cmd 已析构）——见循环头注释。
     }
-    if (!persistent) gblocks_[nb - 1].reset();
+    if (!single_loaded_ && !persistent) gblocks_[nb - 1].reset();
+    return true;
+}
+
+// 显式加载单整图 Net（prefix.param/bin，默认 dit_graph=32 层）。引擎与验证程序调用，
+// 与 load_graph（分块路径）互斥，便于 A/B 对比。prefix/nlayers 可用于加载小单 Net（如 dit_4l_bf16）
+// 验证「合并成单 Net」机制本身数值正确，而不触发 32 层 10GB 权重的 16GB 显存 OOM。
+bool DitVk::load_single(const std::string& graph_dir, const std::string& prefix, int nlayers)
+{
+    if (graph_loaded_) release_graph();
+    single_prefix_ = prefix;
+    single_nlayers_ = nlayers;
+    // 重建干净 Vulkan allocator：前面分块推理（或旧路径）释放的 blob 在 free-list 留下大量
+    // 碎片，单 Net 权重需「连续」device 分配，碎片会导致分配失败 -> OOM/SIGSEGV。
+    // reset 销毁并重建 VkDevice，allocator 回到初始干净状态（CPU 侧权重/分支常数保留在内存）。
+    reset_vulkan_device();
+    graph_dir_ = graph_dir;
+    if (graph_dir_.empty() || graph_dir_.back() != '/') graph_dir_ += '/';
+    if (!load_single_net()) return false;
+    graph_loaded_ = true;
+    single_loaded_ = true;
+    win_injected_ = false;
+    fprintf(stderr, "[graph] single-net ready (%d 层合并 1 个 Net, 整图 1 次 download, prefix=%s)\n",
+            single_nlayers_, single_prefix_.c_str());
     return true;
 }

@@ -108,6 +108,9 @@ add_executable(seedvr2_min_awa_load src/min_awa_load.cpp)
 target_link_libraries(seedvr2_min_awa_load seedvr2_dit)
 add_executable(seedvr2_test_dit_graph src/test_dit_graph.cpp src/awa_window.cpp)
 target_link_libraries(seedvr2_test_dit_graph seedvr2_dit)
+# 单 Net（32 层合并 1 个 Net）vs 分块图 数值对比
+add_executable(seedvr2_test_single_net src/test_single_net.cpp src/awa_window.cpp)
+target_link_libraries(seedvr2_test_single_net seedvr2_dit)
 # 端到端 exe（文件 IO：读 vid_grid/txt/windows → 写 sr_latent）
 add_executable(seedvr2_dit_vk_run src/dit_vk_run.cpp)
 target_link_libraries(seedvr2_dit_vk_run seedvr2_dit)

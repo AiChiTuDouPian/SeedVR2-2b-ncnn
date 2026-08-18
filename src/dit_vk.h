@@ -97,6 +97,9 @@ public:
     // graph_dir: 含 dit_block_0..N-1.param/.bin 的目录（export_dit_graph.py 生成）
     // chunk: 每块层数（32 层默认 4 层/块 × 8 块；系统 RAM 17GB 限制，8 层/块会 OOM）
     bool load_graph(const std::string& graph_dir, int chunk = 4);
+    // 单 32 层整图 Net（dit_graph.param/bin）：10GB 权重常驻，整图仅 1 次 download
+    // prefix/nlayers 用于指定非默认单 Net（如 dit_4l_bf16 验证小单 Net 机制）
+    bool load_single(const std::string& graph_dir, const std::string& prefix = "dit_graph", int nlayers = 32);
     bool graph_ready() const { return graph_loaded_; }
     // 低精度图块是否常驻（true=帧间零加载加速；false=逐块释放，大分辨率显存紧张时用）
     void set_graph_persistent(bool p) { graph_persistent_ = p; }
@@ -106,6 +109,8 @@ public:
                        std::vector<float>& out_sr);
     // 卸载图（释放块 Net 显存/权重；engine 析构或切换分辨率前调用）
     void release_graph();
+    // 限制块图只跑前 n 块（默认全跑；用于小单 Net 同层 A/B 对比，如只跑前 4 块 vs dit_4l）
+    void set_run_blocks(int n) { if (n > 0 && n <= gblock_count_) gblock_run_ = n; }
 
 private:
     bool cache_file(const std::string& base);                 // 读 param+bin 进内存
@@ -148,10 +153,15 @@ private:
 
     // ---- 阶段3 GPU 整图成员 ----
     std::vector<std::unique_ptr<ncnn::Net>> gblocks_;   // 块 Net（0..NB-1）
+    std::unique_ptr<ncnn::Net> single_net_;   // 单 32 层整图（dit_graph.param/bin），10GB 权重常驻，整图 1 次 download
+    std::string single_prefix_ = "dit_graph";  // 单 Net param/bin 前缀（默认 dit_graph）
+    int single_nlayers_ = 32;          // 单 Net 实际层数（forward_graph 单 Net 分支用）
     std::string graph_dir_;
     int gblock_chunk_ = 4;
-    int gblock_count_ = 0;      // NB = NUM_LAYERS / chunk
+    int gblock_count_ = 0;      // NB = NUM_LAYERS / chunk（用于文件校验）
+    int gblock_run_ = 0;        // forward_graph 实际跑的块数（默认=全部；set_run_blocks 可限制前 n 块）
     bool graph_loaded_ = false;
+    bool single_loaded_ = false;   // 单 Net 模式（dit_graph.*，32 层合并 1 个 Net）
     bool graph_persistent_ = true;   // 低精度块常驻（多帧加速）；单图/大分辨率显存紧张时可关
     // 窗口注入缓存（同分辨率帧序列只注入一次；窗口变化时重新注入）
     bool win_injected_ = false;
@@ -163,6 +173,8 @@ private:
     void inject_graph_geometry(int b);
     // 按需加载单个块 Net（未加载时；显存 16GB 无法 8 块 fp32 常驻，fp16 常驻）
     bool graph_load_block(int b);
+    // 加载单 32 层整图 Net（dit_graph.param/bin；fp16 权重常驻，bf16 激活防溢出）
+    bool load_single_net();
 
     AwaVk awa;   // 自定义 Vulkan AWA 模块（窗口注意力 GPU 加速）
 };

@@ -43,10 +43,14 @@ bool SeedVR2Engine::init(const Config& cfg) {
     if (!dit_->init(cfg_.modeldir, false, cfg_.precision)) return false;
     dit_->set_graph_persistent(cfg_.graph_resident);   // 单图/显存紧张逐块释放；多帧常驻加速
 
-    // ---- 阶段3：GPU 常驻整图（分块合并计算图）----
+    // ---- 阶段3：GPU 常驻整图 ----
+    // 优先单 32 层整图 Net（10GB 权重常驻，整图仅 1 次 download，消除块间 CPU 往返）；
+    // fp32 单 Net 权重 20GB 超显存会失败，自动回退分块图（fp32: chunk=2 / 低精度: chunk=1）。
     if (!cfg_.graphdir.empty()) {
-        if (!dit_->load_graph(cfg_.graphdir, (cfg_.precision != 0) ? 1 : 2)) {   // fp32: CH=2（16块×2层，权重峰值1.25GB，1080p/4K 显存安全）   // bf16: 单层块（残差每层 fp32 重置，精度=逐层 bf16）
-            fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
+        if (!dit_->load_single(cfg_.graphdir)) {
+            fprintf(stderr, "[engine] 单 Net 加载失败，回退分块图\n");
+            if (!dit_->load_graph(cfg_.graphdir, (cfg_.precision != 0) ? 1 : 2))
+                fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
         }
     }
 
