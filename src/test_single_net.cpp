@@ -3,8 +3,9 @@
 //      vs 逐层参考路径（forward_latent，原 DiT 块路径，逐层 Net + CPU 残差）
 // 两者计算同一 N 层函数，仅图结构不同（合并 vs 逐层），权重同精度（默认 fp32 精确对拍）。
 // 期望 cos≈1.0：合并不改变计算，且单 Net 全程 VkMat 不落地 CPU、整图仅 1 次 download。
-// 用法：seedvr2_test_single_net [model_dir] [graph_dir] [th] [tw] [nlayers] [prefix]
+// 用法：seedvr2_test_single_net [model_dir] [graph_dir] [th] [tw] [nlayers] [prefix] [precision]
 //   默认 nlayers=4, prefix=dit_4l（fp32 小单 Net，1.3GB，可常驻验证机制而不触发 32 层 OOM）
+//   precision: 0=fp32（默认，精确对拍） 2=bf16（验证低精度路径 AdaCompose 输出转换）
 #include "dit_vk.h"
 #include "awa_window.h"
 #include "awa_layer.h"
@@ -49,13 +50,16 @@ int main(int argc, char** argv)
     int tw = argc > 4 ? atoi(argv[4]) : 34;
     int N  = argc > 5 ? atoi(argv[5]) : 4;     // 单 Net 层数（默认 4，验证机制不 OOM）
     std::string prefix = argc > 6 ? argv[6] : "dit_4l";  // 单 Net param/bin 前缀（默认 fp32 小单 Net）
+    int precision = argc > 7 ? atoi(argv[7]) : 0;        // 0=fp32 2=bf16
     if (model_dir.back() != '/') model_dir += '/';
     if (graph_dir.back() != '/') graph_dir += '/';
 
     // fp32：单 Net(fp32 小单 Net) 与逐层参考路径(fp32) 同精度，做精确对拍（cos≈1.0）。
     // 注：32 层 fp32 单 Net 权重 20GB 超 16GB 显存会被 load_single 拒绝；本测试用 4 层小单 Net。
+    // bf16（precision=2）：验证 AdaCompose 输出的 bf16 转换与 CPU 参考一致（参考路径也走 bf16）。
+    fprintf(stderr, "[test] precision=%d\n", precision);
     DitVk dit;
-    if (!dit.init(model_dir, false, 0)) { fprintf(stderr, "FAIL DitVk::init\n"); return 1; }
+    if (!dit.init(model_dir, false, precision)) { fprintf(stderr, "FAIL DitVk::init\n"); return 1; }
 
     int nw[3] = {4, 3, 3};
     Win wns = awa::make_win(1, th, tw, nw, TXT_N, false);
@@ -74,6 +78,18 @@ int main(int argc, char** argv)
         fprintf(stderr, "FAIL forward_latent(ref)\n"); return 1;
     }
     fprintf(stderr, "[test] 参考路径 out_ref=%zu\n", out_ref.size());
+    // 诊断：dump 参考中间 v_cur_k（SEEDVR_DUMP 存在时）
+    if (getenv("SEEDVR_DUMP")) {
+        for (int k = 1; k <= N; k++) {
+            std::vector<float> dv, dt, sr;
+            if (dit.forward_latent(vid_patch, Lv, txt, TXT_N, 1000.f, 0, k, true, k == N, dv, dt, sr)) {
+                char nm[64]; snprintf(nm, sizeof(nm), "ref_v_cur_%d.f32", k);
+                FILE* f = fopen(nm, "wb");
+                if (f) { fwrite(dv.data(), 4, dv.size(), f); fclose(f); }
+                fprintf(stderr, "[test] ref v_cur_%d dumped %zu\n", k, dv.size());
+            }
+        }
+    }
 
     // ---- 单整图 Net（N 层合并 1 个 Net，整图 1 次 download）----
     if (!dit.load_single(graph_dir, prefix, N)) { fprintf(stderr, "FAIL load_single(%s)\n", prefix.c_str()); return 1; }

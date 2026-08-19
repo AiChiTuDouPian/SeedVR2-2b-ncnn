@@ -43,12 +43,16 @@ bool SeedVR2Engine::init(const Config& cfg) {
     if (!dit_->init(cfg_.modeldir, false, cfg_.precision)) return false;
     dit_->set_graph_persistent(cfg_.graph_resident);   // 单图/显存紧张逐块释放；多帧常驻加速
 
-    // ---- 阶段3：GPU 常驻整图 ----
-    // 优先单 32 层整图 Net（10GB 权重常驻，整图仅 1 次 download，消除块间 CPU 往返）；
-    // fp32 单 Net 权重 20GB 超显存会失败，自动回退分块图（fp32: chunk=2 / 低精度: chunk=1）。
+    // ---- 阶段3：GPU 合并图 ----
+    // RTX 5060 Ti 16GB 无法承载 32 层单 Net 的约 10GB 权重 + staging + 激活 + workspace，
+    // 且驱动 OOM 可在 ncnn 返回失败前直接终止进程。因此默认走可用的分块图；
+    // 仅显式 SEEDVR_SINGLE_NET=1 时尝试单 Net（用于更大显存卡或实验）。
     if (!cfg_.graphdir.empty()) {
-        if (!dit_->load_single(cfg_.graphdir)) {
-            fprintf(stderr, "[engine] 单 Net 加载失败，回退分块图\n");
+        bool try_single = getenv("SEEDVR_SINGLE_NET") && atoi(getenv("SEEDVR_SINGLE_NET")) != 0;
+        if (try_single && dit_->load_single(cfg_.graphdir)) {
+            fprintf(stderr, "[engine] 单 Net 加载成功\n");
+        } else {
+            if (try_single) fprintf(stderr, "[engine] 单 Net 加载失败，回退分块图\n");
             if (!dit_->load_graph(cfg_.graphdir, (cfg_.precision != 0) ? 1 : 2))
                 fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
         }

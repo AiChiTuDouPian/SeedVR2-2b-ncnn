@@ -4,6 +4,7 @@
 // download/upload，消除原有逐层 Net 的 2 upload + 2 download CPU 往返。
 #include "dit_vk.h"
 #include "awa_layer.h"
+#include "ada_compose.h"
 #include "cast_bf16_layer.h"
 #include <ncnn/net.h>
 #include <ncnn/gpu.h>
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 
 // 与 dit_vk.cpp 一致的架构常量
 static const int DIM = 2560;
@@ -61,6 +63,7 @@ bool DitVk::graph_load_block(int b)
     bn->opt.workspace_vkallocator = blob_alloc;
     bn->opt.staging_vkallocator = staging_alloc;
     bn->register_custom_layer("AWA", AwaLayer::creator);
+    bn->register_custom_layer("AdaCompose", AdaComposeLayer::creator);
     bn->register_custom_layer("Bf16Cast", Bf16CastLayer::creator);
     if (bn->load_param(pfull.c_str()) != 0) { fprintf(stderr, "[graph] block %d load_param FAIL\n", b); return false; }
     if (bn->load_model(bbin.data()) < 0) { fprintf(stderr, "[graph] block %d load_model FAIL\n", b); return false; }
@@ -102,6 +105,7 @@ bool DitVk::load_single_net()
     single_net_->opt.workspace_vkallocator = blob_alloc;
     single_net_->opt.staging_vkallocator = staging_alloc;
     single_net_->register_custom_layer("AWA", AwaLayer::creator);
+    single_net_->register_custom_layer("AdaCompose", AdaComposeLayer::creator);
     single_net_->register_custom_layer("Bf16Cast", Bf16CastLayer::creator);
     if (single_net_->load_param(pfull.c_str()) != 0) { fprintf(stderr, "[graph] single load_param FAIL\n"); return false; }
     if (single_net_->load_model(bbin.data()) < 0) { fprintf(stderr, "[graph] single load_model FAIL\n"); return false; }
@@ -221,13 +225,21 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
     if (!graph_loaded_) { fprintf(stderr, "[graph] 未加载\n"); return false; }
 
     std::vector<float> emb = time_embedding(timestep);
-    int nlayer_ada = single_loaded_ ? single_nlayers_ : NUM_LAYERS;
-    std::vector<std::vector<float>> ada = compute_ada(emb, nlayer_ada);
+    // ada/final 在 AdaCompose 图中由 GPU shader 算，无需 CPU 预计算
+    // 旧图路径仍需 CPU compute_ada + 逐个 upload
+    std::vector<std::vector<float>> ada;  // 延迟计算
     std::vector<float> fin_sc(DIM), fin_sh(DIM);
-    for (int d = 0; d < DIM; d++) {
-        fin_sc[d] = emb[d * 3 + 1] + Wvoa_sc[d];
-        fin_sh[d] = emb[d * 3 + 0] + Wvoa_s[d];
-    }
+    bool ada_computed = false;
+    auto ensure_ada = [&]() {
+        if (ada_computed) return;
+        int nlayer_ada = single_loaded_ ? single_nlayers_ : NUM_LAYERS;
+        ada = compute_ada(emb, nlayer_ada);
+        for (int d = 0; d < DIM; d++) {
+            fin_sc[d] = emb[d * 3 + 1] + Wvoa_sc[d];
+            fin_sh[d] = emb[d * 3 + 0] + Wvoa_s[d];
+        }
+        ada_computed = true;
+    };
 
     std::vector<float> vid_cur = vid_patch, txt_cur = txt;
     int nb, chunk;
@@ -270,22 +282,66 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
             snprintf(inn, sizeof(inn), "t_cur_%d", l0);
             upload(inn, txt_cur, DIM, TXT);
         }
-        for (int i = l0; i < l1; i++)
-            for (int f = 0; f < 2; f++) {
-                const char* fname = (f == 0) ? "v" : "t";
-                for (int k = 0; k < 6; k++) {
-                    static const char* kn[] = {"a_sc", "a_sh", "a_g", "m_sc", "m_sh", "m_g"};
-                    char nm[64]; snprintf(nm, sizeof(nm), "ada_%d_%s_%s", i, fname, kn[k]);
-                    upload(nm, ada[(i * 2 + f) * 6 + k], DIM, 1);
+        // AdaCompose 图：只 upload emb（1 次），GPU shader 算 384+2 个 ada 向量
+        // 旧图：逐个 upload 384 ada + 2 final（CPU compute_ada + 384 次 record_upload）
+        bool use_adacompose = false;
+        for (const char* nm : bn->input_names())
+            if (nm && strcmp(nm, "emb") == 0) { use_adacompose = true; break; }
+        if (use_adacompose) {
+            // AdaCompose shader 固定按 float[] 读取 emb；低精度 Net 也必须保留 fp32 上传布局。
+            ncnn::Mat m_emb; m_emb.create(15360, 1, (size_t)4u, 1);
+            memcpy(m_emb.data, emb.data(), emb.size() * sizeof(float));
+            ncnn::VkMat vk_emb;
+            ncnn::Option emb_opt = bn->opt;
+            emb_opt.use_fp16_storage = emb_opt.use_fp16_packed = false;
+            emb_opt.use_bf16_storage = emb_opt.use_bf16_packed = false;
+            cmd.record_upload(m_emb, vk_emb, emb_opt);
+            ex.input("emb", vk_emb);
+        } else {
+            ensure_ada();
+            for (int i = l0; i < l1; i++)
+                for (int f = 0; f < 2; f++) {
+                    const char* fname = (f == 0) ? "v" : "t";
+                    for (int k = 0; k < 6; k++) {
+                        static const char* kn[] = {"a_sc", "a_sh", "a_g", "m_sc", "m_sh", "m_g"};
+                        char nm[64]; snprintf(nm, sizeof(nm), "ada_%d_%s_%s", i, fname, kn[k]);
+                        upload(nm, ada[(i * 2 + f) * 6 + k], DIM, 1);
+                    }
                 }
+            if (b == nb - 1) {
+                upload("ada_fin_sc", fin_sc, DIM, 1);
+                upload("ada_fin_sh", fin_sh, DIM, 1);
             }
-        if (b == nb - 1) {
-            upload("ada_fin_sc", fin_sc, DIM, 1);
-            upload("ada_fin_sh", fin_sh, DIM, 1);
         }
         if (b == nb - 1) {
             const char* outn = "out0";
             ncnn::Mat m_out;
+            // 诊断：SEEDVR_DUMP=blob1:blob2 dump 中间/输出 blob（单 Net 分支）
+            const char* dumpenv = getenv("SEEDVR_DUMP");
+            if (dumpenv && single_loaded_) {
+                std::string dls = dumpenv;
+                std::string tok;
+                std::stringstream ss(dls);
+                while (std::getline(ss, tok, ',')) {
+                    ncnn::Mat dm;
+                    if (precision_ == 0) {
+                        ncnn::VkMat dvk;
+                        if (ex.extract(tok.c_str(), dvk, cmd) != 0) { fprintf(stderr, "[dump] extract %s FAIL\n", tok.c_str()); break; }
+                        ncnn::VkMat dvk1;
+                        vkdev->convert_packing(dvk, dvk1, 1, cmd, bn->opt);
+                        { ncnn::Option od = bn->opt; od.use_packing_layout = false; cmd.record_download(dvk1, dm, od); }
+                        cmd.submit_and_wait();
+                        cmd.reset();
+                    } else {
+                        if (ex.extract(tok.c_str(), dm) != 0) { fprintf(stderr, "[dump] extract %s FAIL\n", tok.c_str()); break; }
+                    }
+                    FILE* df = fopen(("dump_" + tok + ".f32").c_str(), "wb");
+                    if (df) { fwrite(dm.data, 1, dm.total() * (size_t)dm.elemsize, df); fclose(df);
+                        fprintf(stderr, "[dump] %s w=%d h=%d c=%d ep=%d elemsize=%zu total=%zu\n",
+                                tok.c_str(), dm.w, dm.h, dm.c, dm.elempack, (size_t)dm.elemsize, dm.total());
+                    }
+                }
+            }
             if (precision_ == 0) {
                 // fp32：VkMat 连续 + convert_packing + download
                 ncnn::VkMat vk_out;

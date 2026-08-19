@@ -1,0 +1,39 @@
+#version 450
+
+// AdaCompose 低精度输出（fp16）。每线程计算并打包相邻两个元素，避免写竞争。
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer b_emb { float emb[]; };
+layout(binding = 1) readonly buffer b_branch { float branch[]; };
+layout(binding = 2) buffer b_out { uint out_packed[]; };
+
+layout(push_constant) uniform parameter
+{
+    int k;
+    int dim;
+    int vec_offset;
+    int emb_stride;
+} p;
+
+uint f32_to_f16_bits(float x)
+{
+    return packHalf2x16(vec2(x, 0.0)) & 0xFFFFu;
+}
+
+void main()
+{
+    int pair_idx = int(gl_GlobalInvocationID.x);
+    int d0 = pair_idx * 2;
+    if (d0 >= p.dim) return;
+    float x0 = emb[d0 * p.emb_stride + p.k] + branch[p.vec_offset + d0];
+    uint lo = f32_to_f16_bits(x0);
+    uint hi = 0u;
+    int d1 = d0 + 1;
+    if (d1 < p.dim)
+    {
+        float x1 = emb[d1 * p.emb_stride + p.k] + branch[p.vec_offset + d1];
+        hi = f32_to_f16_bits(x1);
+    }
+    out_packed[pair_idx] = lo | (hi << 16);
+}

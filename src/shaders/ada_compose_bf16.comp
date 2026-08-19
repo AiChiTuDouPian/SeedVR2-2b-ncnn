@@ -1,0 +1,40 @@
+#version 450
+
+// AdaCompose 低精度输出（bf16）。每线程计算并打包相邻两个元素，避免通用 cast shader
+// 以两个线程 read-modify-write 同一 uint 带来的写竞争。
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer b_emb { float emb[]; };
+layout(binding = 1) readonly buffer b_branch { float branch[]; };
+layout(binding = 2) buffer b_out { uint out_packed[]; };
+
+layout(push_constant) uniform parameter
+{
+    int k;
+    int dim;
+    int vec_offset;
+    int emb_stride;
+} p;
+
+uint f32_to_bf16_rne(float x)
+{
+    uint u = floatBitsToUint(x);
+    return (u + 0x7FFFu + ((u >> 16) & 1u)) >> 16;
+}
+
+void main()
+{
+    int pair_idx = int(gl_GlobalInvocationID.x);
+    int d0 = pair_idx * 2;
+    if (d0 >= p.dim) return;
+    float x0 = emb[d0 * p.emb_stride + p.k] + branch[p.vec_offset + d0];
+    uint lo = f32_to_bf16_rne(x0);
+    uint hi = 0u;
+    int d1 = d0 + 1;
+    if (d1 < p.dim)
+    {
+        float x1 = emb[d1 * p.emb_stride + p.k] + branch[p.vec_offset + d1];
+        hi = f32_to_bf16_rne(x1);
+    }
+    out_packed[pair_idx] = lo | (hi << 16);
+}

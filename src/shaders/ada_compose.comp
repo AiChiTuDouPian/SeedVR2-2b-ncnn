@@ -1,0 +1,34 @@
+#version 450
+
+// AdaCompose: emb + branch_weights -> 每个 ada 向量(DIM)
+//
+// out[d] = emb[d * emb_stride + k] + branch[vec_offset + d]
+//
+// binding 0 = emb (float[], readonly)
+// binding 1 = branch_buf (float[], readonly)
+// binding 2 = output (float[], DIM 元素)
+// push_constant: k, dim, vec_offset, emb_stride
+//
+// dispatcher: w = DIM (元素数语义), h=1, c=1
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer b_emb { float emb[]; };
+layout(binding = 1) readonly buffer b_branch { float branch[]; };
+layout(binding = 2) buffer b_out { float out_data[]; };
+
+layout(push_constant) uniform parameter
+{
+    int k;            // emb 通道索引
+    int dim;          // 向量维度 DIM=2560
+    int vec_offset;   // branch_buf 中此向量的起始偏移
+    int emb_stride;   // emb 通道间隔（6=ada, 3=final）
+} p;
+
+void main()
+{
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid < p.dim)
+    {
+        out_data[gid] = emb[gid * p.emb_stride + p.k] + branch[p.vec_offset + gid];
+    }
+}

@@ -101,14 +101,46 @@ def ada_names(i, flow):
 if L0 == 0:
     add_input("in_vid0")
     add_input("in_txt0")
-for i in range(L0, L1):
-    flows = ("v", "t") if i < MM_LAYERS else ("v", "t")   # 后 22 层两流引用同一 ada（all）
-    for f in flows:
-        for k in ada_names(i, f):
-            add_input(k)
-if L1 == N_LAYERS:
-    add_input("ada_fin_sc")
-    add_input("ada_fin_sh")
+# AdaCompose：1 个 emb Input 替代 384+2 个 ada Input（GPU shader 算 emb+branch）
+USE_ADACOMPOSE = os.environ.get("SEEDVR_ADACOMPOSE", "1") != "0"
+n_ada_layers = L1 - L0
+has_final = 1 if L1 == N_LAYERS else 0
+ada_out_names = []   # AdaCompose 输出 blob 名（顺序 = load_model 读取顺序）
+if USE_ADACOMPOSE:
+    add_input("emb")
+    for i in range(L0, L1):
+        for f in ("v", "t"):
+            for k in ("a_sc", "a_sh", "a_g", "m_sc", "m_sh", "m_g"):
+                ada_out_names.append(f"ada_{i}_{f}_{k}")
+    if has_final:
+        ada_out_names.append("ada_fin_sc")
+        ada_out_names.append("ada_fin_sh")
+    n_out = len(ada_out_names)
+    # AdaCompose 层：1 输入(emb) → n_out 输出
+    out_blobs = " ".join(ada_out_names)
+    lines.append(f"AdaCompose  ada_compose  1 {n_out} emb {out_blobs} "
+                 f"0={SPV_DIR_PARAM} 1={n_ada_layers} 2={MM_LAYERS} 3={DIM} 4={has_final}")
+    # bin 权重：每层 2 流 × (attn_shift, attn_scale, attn_gate, mlp_shift, mlp_scale, mlp_gate) + final
+    for i in range(L0, L1):
+        dual = i < MM_LAYERS
+        bv = f"b{i}_vid" if dual else f"b{i}_all"
+        bt = f"b{i}_txt" if dual else f"b{i}_all"
+        for base in (bv, bt):
+            for wname in ("attn_shift", "attn_scale", "attn_gate", "mlp_shift", "mlp_scale", "mlp_gate"):
+                bin_parts.append(struct.pack('<I', 0) + raw_f32(f"{MODEL}/{base}_{wname}.bin"))
+    if has_final:
+        bin_parts.append(struct.pack('<I', 0) + raw_f32(f"{MODEL}/vid_out_ada_shift.bin"))
+        bin_parts.append(struct.pack('<I', 0) + raw_f32(f"{MODEL}/vid_out_ada_scale.bin"))
+else:
+    # 旧路径：384+2 个独立 Input blob（CPU compute_ada + 逐个 upload）
+    for i in range(L0, L1):
+        flows = ("v", "t") if i < MM_LAYERS else ("v", "t")
+        for f in flows:
+            for k in ada_names(i, f):
+                add_input(k)
+    if L1 == N_LAYERS:
+        add_input("ada_fin_sc")
+        add_input("ada_fin_sh")
 
 # 顶层投影（残差 blob 用唯一名 v_cur_0 / t_cur_0，ncnn 的 blob 只能有一个 producer）
 if L0 == 0:

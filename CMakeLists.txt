@@ -52,7 +52,7 @@ add_seedvr2_exe(seedvr2_verify_dit_dbg0 src/verify_dit_dbg0.cpp)
 add_seedvr2_exe(seedvr2_verify_dit src/verify_dit.cpp)
 
 # M6 (Vulkan) — SeedVR2 NaDiT 推理引擎（GEMM 走 ncnn Vulkan Net）
-add_library(seedvr2_dit STATIC src/dit_vk.cpp src/awa_vk.cpp src/awa_layer.cpp src/cast_bf16_layer.cpp src/dit_graph.cpp src/seedvr2_pipeline.cpp)
+add_library(seedvr2_dit STATIC src/dit_vk.cpp src/awa_vk.cpp src/awa_layer.cpp src/ada_compose.cpp src/cast_bf16_layer.cpp src/dit_graph.cpp src/seedvr2_pipeline.cpp)
 target_include_directories(seedvr2_dit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${NCNN_DIR}/include ${VULKAN_SDK}/Include)
 target_link_libraries(seedvr2_dit ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
 target_compile_options(seedvr2_dit PRIVATE -fopenmp -O2)
@@ -85,10 +85,37 @@ if(GLSLANG_VALIDATOR)
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_init.comp
         COMMENT "Compile awa_init.comp -> models/m5/awa_init.spv"
     )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose.comp
+        COMMENT "Compile ada_compose.comp -> models/m5/ada_compose.spv"
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_bf16.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose_bf16.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_bf16.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose_bf16.comp
+        COMMENT "Compile ada_compose_bf16.comp -> models/m5/ada_compose_bf16.spv"
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_fp16.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose_fp16.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_fp16.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose_fp16.comp
+        COMMENT "Compile ada_compose_fp16.comp -> models/m5/ada_compose_fp16.spv"
+    )
     add_custom_target(awa_spv ALL DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_coalesce.spv
-        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv)
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_bf16.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_fp16.spv)
 else()
     message(WARNING "glslangValidator 未找到；需手动把 awa.spv / awa_coalesce.spv / awa_init.spv 放到 models/m5/")
 endif()
