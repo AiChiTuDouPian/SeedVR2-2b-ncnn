@@ -34,3 +34,6 @@ __pycache__/
 
 # ---------- Test / debug logs ----------
 log_*.txt
+
+# ---------- 诊断 dump / 对比产物（不入库，防 git add -A 整树误入） ----------
+diag/
