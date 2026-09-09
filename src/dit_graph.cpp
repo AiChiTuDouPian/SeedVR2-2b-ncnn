@@ -14,10 +14,22 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <cstdlib>
 
 // 与 dit_vk.cpp 一致的架构常量
 static const int DIM = 2560;
 static const int NUM_LAYERS = 32, MM_LAYERS = 10;
+
+// 块图前缀：默认按 precision_ 选择（fp32/fp16/bf16 三套块图）；
+// 可用 SEEDVR_BLOCK_PREFIX 环境变量覆盖，用于测试不同 chunk 导出的块图
+// （如 dit_block_bf16_c8_* = 8 层/块，验证「块数越少 per-Net 固定开销越低」）。
+static const char* block_prefix(int precision)
+{
+    const char* ov = getenv("SEEDVR_BLOCK_PREFIX");
+    if (ov && ov[0]) return ov;
+    return (precision == 0) ? "dit_block_" : (precision == 1 ? "dit_block_f16_" : "dit_block_bf16_");
+}
 
 static std::vector<unsigned char> graph_read_bin(const std::string& path)
 {
@@ -35,8 +47,7 @@ static std::vector<unsigned char> graph_read_bin(const std::string& path)
 bool DitVk::graph_load_block(int b)
 {
     if (gblocks_[b]) return true;
-    // 低精度按精度选块前缀：fp16 -> dit_block_f16_*，bf16 -> dit_block_bf16_*（内容均为 fp32 权重 bin）
-    const char* prefix = (precision_ == 0) ? "dit_block_" : (precision_ == 1 ? "dit_block_f16_" : "dit_block_bf16_");
+    const char* prefix = block_prefix(precision_);
     char pname[64], bname[64];
     snprintf(pname, sizeof(pname), "%s%d.param", prefix, b);
     snprintf(bname, sizeof(bname), "%s%d.bin", prefix, b);
@@ -53,14 +64,22 @@ bool DitVk::graph_load_block(int b)
     //    之前统一用 bf16（precision_!=0）导致 --fp16 实际跑 bf16（PSNR 15dB 级）。
     bool bf16 = (precision_ == 2);
     bool f16  = (precision_ == 1);
+    if (getenv("SEEDVR_GRAPH_FP32STORAGE")) { bf16 = false; f16 = false; }  // 诊断：强制 fp32 存储（对齐 test_dit_graph）
     bn->opt.use_bf16_storage = bf16;
     bn->opt.use_bf16_packed  = bf16;
     bn->opt.use_fp16_storage = f16;
     bn->opt.use_fp16_packed  = f16;
     bn->opt.use_fp16_arithmetic = false;   // fp32 累加（fp16/bf16 累加器会溢出）
     bn->opt.lightmode = false;   // lightmode=true 在 extract 多 blob 时会递归重算崩
-    bn->opt.blob_vkallocator = blob_alloc;
-    bn->opt.workspace_vkallocator = blob_alloc;
+    // DIAG: SEEDVR_NO_REUSE=1 时用 VkWeightAllocator 作为 blob allocator（每次独立分配，不复用中间 blob），
+    // 验证 ncnn 的 blob 复用是否是 vid_in/ada 错误根因
+    ncnn::VkAllocator* b_alloc = blob_alloc;
+    if (getenv("SEEDVR_NO_REUSE")) {
+        if (!noreuse_alloc_) noreuse_alloc_ = new ncnn::VkWeightAllocator(vkdev);
+        b_alloc = noreuse_alloc_;
+    }
+    bn->opt.blob_vkallocator = b_alloc;
+    bn->opt.workspace_vkallocator = b_alloc;
     bn->opt.staging_vkallocator = staging_alloc;
     bn->register_custom_layer("AWA", AwaLayer::creator);
     bn->register_custom_layer("AdaCompose", AdaComposeLayer::creator);
@@ -126,7 +145,7 @@ bool DitVk::load_graph(const std::string& graph_dir, int chunk)
     gblocks_.clear();
     gblocks_.resize(gblock_count_);
     // 只校验文件存在（块 Net 按需加载+用完释放：8 块 fp32 权重 20GB 超 16GB 显存，不能全常驻）
-    const char* prefix = (precision_ == 0) ? "dit_block_" : (precision_ == 1 ? "dit_block_f16_" : "dit_block_bf16_");
+    const char* prefix = block_prefix(precision_);
     for (int b = 0; b < gblock_count_; b++) {
         char pname[64];
         snprintf(pname, sizeof(pname), "%s%d.param", prefix, b);
@@ -144,6 +163,8 @@ void DitVk::release_graph()
 {
     gblocks_.clear();
     single_net_.reset();
+    for (auto& v : up_alloc_) for (auto* a : v) delete a;
+    up_alloc_.clear();
     single_loaded_ = false;
     graph_loaded_ = false;
     win_injected_ = false;
@@ -235,8 +256,10 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
         int nlayer_ada = single_loaded_ ? single_nlayers_ : NUM_LAYERS;
         ada = compute_ada(emb, nlayer_ada);
         for (int d = 0; d < DIM; d++) {
-            fin_sc[d] = emb[d * 3 + 1] + Wvoa_sc[d];
-            fin_sh[d] = emb[d * 3 + 0] + Wvoa_s[d];
+            // [FIX 2026-09-10] emb 6 槽布局：out 层(attn 组) scale=emb[6d+1], shift=emb[6d+0]。
+            // 旧代码 emb[d*3+1/0] 6 槽下错位（奇 d 取到 mlp 组）→ 64 维输出 rel≈40% → 图像糊。
+            fin_sc[d] = emb[d * 6 + 1] + Wvoa_sc[d];
+            fin_sh[d] = emb[d * 6 + 0] + Wvoa_s[d];
         }
         ada_computed = true;
     };
@@ -250,6 +273,7 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
     for (int b = 0; b < nb; b++)
     {
         int l0 = b * chunk, l1 = l0 + chunk;
+        auto t_blk0 = std::chrono::high_resolution_clock::now();
         ncnn::Net* bn;
         if (single_loaded_) {
             bn = single_net_.get();
@@ -265,14 +289,50 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
         }
         ncnn::VkCompute cmd(vkdev);
         ncnn::Extractor ex = bn->create_extractor();
+        // FIX: ncnn 的 blob allocator 会把分块图的所有 Input blob（vid/txt/ada 向量）复用同一 buffer，
+        // 导致后 upload 的覆盖先 upload 的（vid_patch 被 txt/ada 覆盖）-> 第 0 层就错。
+        // 解法：每个 upload 用【独立的 VkBlobAllocator 实例】，从物理上隔离不同 blob 的 buffer，
+        // 使 ncnn 无法跨 Input 复用。缓存按 (block, upload序号) 索引，跨帧复用。
+        if ((int)up_alloc_.size() <= b) up_alloc_.resize(b + 1);
+        auto& blk_alloc = up_alloc_[b];
+        if (!blk_alloc.empty()) {
+            for (auto* a : blk_alloc) a->clear();   // 释放上一帧 buffer，复用 allocator 实例
+        }
+        up_seq_ = 0;
         auto upload = [&](const char* name, const std::vector<float>& data, int dim, int h) {
             ncnn::Mat m; m.create(dim, h, (size_t)4u, 1);
             memcpy(m.data, data.data(), data.size() * sizeof(float));
             ncnn::VkMat vk;
-            cmd.record_upload(m, vk, bn->opt);
+            // 独立 allocator（每 (block,seq) 一个实例），绝不与其它 Input 复用 buffer
+            if (blk_alloc.size() <= (size_t)up_seq_) blk_alloc.resize(up_seq_ + 1, nullptr);
+            if (!blk_alloc[up_seq_]) blk_alloc[up_seq_] = new ncnn::VkBlobAllocator(vkdev);
+            ncnn::VkAllocator* ia = blk_alloc[up_seq_];
+            up_seq_++;
+            ncnn::Option uopt = bn->opt;
+            uopt.blob_vkallocator = ia;
+            cmd.record_upload(m, vk, uopt);
             ex.input(name, vk);
+            if (getenv("SEEDVR_DUMP_ADABUF") && vk.buffer()) {
+                fprintf(stderr, "[adabuf] %s -> ptr=%p off=%zu\n", name, (void*)vk.buffer(), (size_t)vk.offset);
+            }
+            // DIAG: 验证 in_vid0 上传到 GPU 后的值（检查是否被转 bf16 或丢失）
+            if (getenv("SEEDVR_DIAG_IN0") && strcmp(name, "in_vid0") == 0) {
+                ncnn::VkCompute dcmd(vkdev);
+                ncnn::Mat dv;
+                ncnn::Option do2 = bn->opt; do2.use_packing_layout = false;
+                dcmd.record_download(vk, dv, do2);
+                dcmd.submit_and_wait(); dcmd.reset();
+                float mn=1e30f,mx=-1e30f; const float* hp=(const float*)dv.data;
+                for (size_t q=0;q<(size_t)dv.w*dv.h;q++){ float v=hp[q]; if(v<mn)mn=v; if(v>mx)mx=v; }
+                fprintf(stderr, "[diag_in0] elemsize=%zu w=%d h=%d range[%.4f,%.4f] data0=%.4f\n",
+                        (size_t)dv.elemsize, dv.w, dv.h, mn, mx, hp[0]);
+            }
         };
         if (b == 0) {
+            if (getenv("SEEDVR_DUMP_VPATCH")) {
+                FILE* vf = fopen("vidpatch_engine.f32", "wb");
+                if (vf) { fwrite(vid_patch.data(), sizeof(float), vid_patch.size(), vf); fclose(vf); }
+            }
             upload("in_vid0", vid_patch, 132, Lv);
             upload("in_txt0", txt, 5120, TXT);
         } else {
@@ -299,6 +359,19 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
             ex.input("emb", vk_emb);
         } else {
             ensure_ada();
+            if (getenv("SEEDVR_DUMP_ADA_CPU") && b == 0) {
+                // ada[0] = 层0 vid 流 a_sc；ada[1] = 层0 vid 流 a_sh...
+                fprintf(stderr, "[ada_cpu] ada[0..5][0:4] = ");
+                for (int k = 0; k < 6; k++) {
+                    fprintf(stderr, "[");
+                    for (int j = 0; j < 4; j++) fprintf(stderr, "%.4f ", ada[k][j]);
+                    fprintf(stderr, "] ");
+                }
+                fprintf(stderr, "\n");
+                // 层0 vid a_sc (index (0*2+0)*6+0 = 0), a_sh (=1), a_g (=2)
+                float mn=1e30f, mx=-1e30f; for (auto v : ada[0]) { if(v<mn)mn=v; if(v>mx)mx=v; }
+                fprintf(stderr, "[ada_cpu] ada[0](v a_sc) range[%.4f,%.4f]\n", mn, mx);
+            }
             for (int i = l0; i < l1; i++)
                 for (int f = 0; f < 2; f++) {
                     const char* fname = (f == 0) ? "v" : "t";
@@ -352,10 +425,12 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
                 cmd.submit_and_wait();
                 cmd.reset();
             } else {
-                // bf16/fp16：CPU extract（ncnn 自动低16->fp32；VkMat convert_packing 不支持 bf16）
-                if (ex.extract(outn, m_out) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn); return false; }
-                // ⚠️ 必须像 fp32 分支一样清空外部 cmd：否则块末 gblocks_[b].reset() 销毁 Net 时，
-                // cmd 里还挂着 record_upload 的 VkMat 引用 -> "pool allocator destroyed too early" 崩
+                // bf16/fp16：GPU extract 主路径（与 fp32 同 cmd 连续 record + download；
+                // record_download 内置 fp16/bf16 -> fp32 cast）
+                ncnn::VkMat vk_out, vk_p1;
+                if (ex.extract(outn, vk_out, cmd) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn); return false; }
+                vkdev->convert_packing(vk_out, vk_p1, 1, cmd, bn->opt);
+                { ncnn::Option od = bn->opt; od.use_packing_layout = false; cmd.record_download(vk_p1, m_out, od); }
                 cmd.submit_and_wait();
                 cmd.reset();
             }
@@ -382,15 +457,66 @@ bool DitVk::forward_graph(const std::vector<float>& vid_patch, int Lv,
                 cmd.submit_and_wait();
                 cmd.reset();
             } else {
-                if (ex.extract(outn, mv) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn); return false; }
-                if (ex.extract(outn2, mt) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn2); return false; }
-                // 同最后块：清空外部 cmd，避免 reset Net 时 cmd 残留引用 -> allocator 过早销毁崩
+                auto t_pre = std::chrono::high_resolution_clock::now();
+                // 低精度：走与 fp32 相同的 GPU extract 主路径（cmd 连续 record，避免 CPU extract
+                // 每次自建 cmd 重 forward 导致 extractor 状态错乱/块间 vid 坏）。
+                // record_download 内置 fp16/bf16 -> fp32 cast（convert_packing 的 cast_type_to）。
+                ncnn::VkMat vk_out, vk_out2;
+                if (ex.extract(outn, vk_out, cmd) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn); return false; }
+                if (ex.extract(outn2, vk_out2, cmd) != 0) { fprintf(stderr, "[graph] block %d extract %s FAIL\n", b, outn2); return false; }
+                { ncnn::Option od = bn->opt; od.use_packing_layout = false; cmd.record_download(vk_out, mv, od);
+                  cmd.record_download(vk_out2, mt, od); }
                 cmd.submit_and_wait();
                 cmd.reset();
+                auto t_post = std::chrono::high_resolution_clock::now();
+                double extr_ms = std::chrono::duration<double, std::milli>(t_post - t_pre).count();
+                double blk_ms = std::chrono::duration<double, std::milli>(t_post - t_blk0).count();
+                fprintf(stderr, "[perf] 图块[%d,%d) chunk=%d 总=%7.1fms  extract(GPU+下载)=%7.1fms(%.0f%%)\n",
+                        l0, l1, chunk, blk_ms, extr_ms, (extr_ms / blk_ms) * 100.0);
             }
             if (mv.w != DIM || mv.h != Lv) { fprintf(stderr, "[graph] block %d vid out w=%d h=%d\n", b, mv.w, mv.h); return false; }
             vid_cur.assign((const float*)mv.data, (const float*)mv.data + (size_t)Lv * DIM);
             txt_cur.assign((const float*)mt.data, (const float*)mt.data + (size_t)TXT * DIM);
+            // DIAG: dump 每块输出 vid_cur 到 block{b}_vid.f32，用于逐层对比 numpy 参考
+            if (getenv("SEEDVR_DUMP_BLOCKOUT")) {
+                char bfn[64]; snprintf(bfn, sizeof(bfn), "blkout_%d_vid.f32", b);
+                FILE* bf = fopen(bfn, "wb");
+                if (bf) { fwrite(vid_cur.data(), sizeof(float), vid_cur.size(), bf); fclose(bf); }
+            }
+            // DIAG: block0 内部中间 blob（定位 ada 调制/qkv/attn/mlp 哪一步错）
+            if (b == 0 && getenv("SEEDVR_DUMP_B0MID")) {
+                const char* mids[] = {"in_vid0", "v_cur_0", "v_rn_0", "v_m2_0", "v_qkv_0", "v_attn_0", "v_cur_0_a",
+                                      "v_rn2_0", "v_m4_0", "v_hs_0", "v_cur_1", "v_cur_1_a", "v_cur_2", "v_cur_2_a", "v_cur_3",
+                                      "ada_0_v_a_sc", "ada_0_v_a_sh", "ada_0_v_m_sc", "ada_0_v_m_sh", "ada_0_v_m_g"};
+                for (auto* mn2 : mids) {
+                    ncnn::Mat dm2;
+                    if (ex.extract(mn2, dm2) != 0) { fprintf(stderr, "[b0mid] %s FAIL\n", mn2); continue; }
+                    char mf[64]; snprintf(mf, sizeof(mf), "b0mid_%s.f32", mn2);
+                    FILE* mfp = fopen(mf, "wb");
+                    if (mfp) { fwrite(dm2.data, 1, dm2.total()*(size_t)dm2.elemsize, mfp); fclose(mfp);
+                        float mn=1e30f,mx=-1e30f; const float* dd=(const float*)dm2.data;
+                        for (size_t q=0;q<(size_t)dm2.w*dm2.h*dm2.c;q++){float v=dd[q]; if(v<mn)mn=v; if(v>mx)mx=v;}
+                        fprintf(stderr, "[b0mid] %s w=%d h=%d range[%.4f,%.4f]\n", mn2, dm2.w, dm2.h, mn, mx); }
+                    // DIAG: 同 blob GPU extract 对照（与 fp32 主路径一致的 convert_packing+download）
+                    if (getenv("SEEDVR_DUMP_B0MID_GPU")) {
+                        ncnn::VkCompute gcmd(vkdev);
+                        ncnn::VkMat gvk, gvk1;
+                        ncnn::Mat gm;
+                        bool gok = (ex.extract(mn2, gvk, gcmd) == 0);
+                        if (gok) {
+                            vkdev->convert_packing(gvk, gvk1, 1, gcmd, bn->opt);
+                            { ncnn::Option od = bn->opt; od.use_packing_layout = false; gcmd.record_download(gvk1, gm, od); }
+                            gcmd.submit_and_wait(); gcmd.reset();
+                            char gf[64]; snprintf(gf, sizeof(gf), "b0mid_g_%s.f32", mn2);
+                            FILE* gfp = fopen(gf, "wb");
+                            if (gfp) { fwrite(gm.data, 1, gm.total()*(size_t)gm.elemsize, gfp); fclose(gfp);
+                                float gmn=1e30f,gmx=-1e30f; const float* gd=(const float*)gm.data;
+                                for (size_t q=0;q<(size_t)gm.w*gm.h*gm.c;q++){float v=gd[q]; if(v<gmn)gmn=v; if(v>gmx)gmx=v;}
+                                fprintf(stderr, "[b0mid_g] %s w=%d h=%d ep=%d es=%zu range[%.4f,%.4f]\n", mn2, gm.w, gm.h, gm.elempack, (size_t)gm.elemsize, gmn, gmx); }
+                        } else fprintf(stderr, "[b0mid_g] %s extract FAIL\n", mn2);
+                    }
+                }
+            }
         }
         // 常驻仅限低精度（bf16/fp16 权重 <16GB 显存，帧间零加载）；fp32 权重 20GB 超显存必须逐块释放。
         // 显存紧张时（1080p 大激活）可设 SEEDVR_GRAPH_RELEASE=1 强制逐块释放。
