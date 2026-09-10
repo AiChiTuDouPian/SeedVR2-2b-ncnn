@@ -150,6 +150,15 @@ private:
     // Vulkan 描述符/管线资源 churn（32 层 ×7 ≈ 224 次创建销毁会在 ~layer20 耗尽某类资源）。
     // 上限 16 个 ≈ 2-3 层权重（fp16 ≈ 1-2GB），可驻留 16GB 显存；超出则淘汰最久未用者（其析构释放权重显存）。
     static const size_t NET_CACHE_CAP = 16;
+    // CPU 模式的 Net 缓存上限。为什么不能像 GPU 那样放宽（原实现是 1024 = 永不淘汰）：
+    // CPU 上 ncnn 没有 fp16/bf16 算子，每个 Net 的解码权重恒为 fp32（3.06G 参数 ≈ 12.2GB 全量），
+    // 叠加 fcache 里的 .bin 原始字节（≈7.9GB），工作集约 20GB —— 超过本机 15.8GB 内存，
+    // 实测在 DiT 第 20~24 层 OOM（rc=132，日志止于 layer 20/32，无错误信息）。
+    // 而 CPU 路径（forward_latent）的访问模式是**纯顺序扫描**：32 层 × (vid 4 + txt 4) ≈ 168 个
+    // 互不复用的 base，因此 LRU 只要装不下全部就等同于全部失效 —— cap 取多大都无所谓。
+    // 故取小值 + 淘汰时连 fcache 字节一起释放，把工作集压到 ~1GB；
+    // 代价是每次访问重新读盘 + 重新 fp16→fp32 解码（实测约 +8% DiT 时间，见性能报告 §4）。
+    static const size_t CPU_NET_CACHE_CAP = 4;
     std::map<std::string, std::unique_ptr<ncnn::Net>> net_cache;
     std::list<std::string> net_lru;
     ncnn::Net* get_net(const std::string& base);   // 取/建缓存 Net（带 LRU 淘汰）

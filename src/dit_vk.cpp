@@ -243,9 +243,14 @@ ncnn::Net* DitVk::get_net(const std::string& base) {
 }
 
 void DitVk::evict_nets() {
-    // CPU 模式无 GPU 显存压力，缓存全部 Net（约 30 个 ~ 数 GB RAM），避免 forward_latent 反复重载权重；
-    // GPU 模式保持 NET_CACHE_CAP(16) 上限，超出淘汰最久未用者以控制显存。
-    size_t cap = use_cpu_ ? 1024 : NET_CACHE_CAP;
+    // GPU 模式：显存压力为主，缓存 NET_CACHE_CAP(16) 个 Net，超出淘汰最久未用者
+    // （其析构释放权重显存）；fcache 保留 .bin 原始字节，避免重读 40GB 模型。
+    // CPU 模式：没有显存压力，但有**系统内存**墙（本机 15.8GB）。原实现 cap=1024 等于
+    // 「永不淘汰」→ 3.06G 参数的 fp32 解码权重（≈12.2GB）+ fcache 原始字节（≈7.9GB）
+    // 同时常驻，工作集约 20GB，实测在 DiT 第 20~24 层 OOM（rc=132，无错误信息）。
+    // 而 CPU 路径是纯顺序扫描（168 个互不复用的 base），LRU 装不下全部就等同于全部失效，
+    // 故取小上限，并在淘汰时连该层的 fcache 字节一起释放，把工作集压到 ~1GB。
+    const size_t cap = use_cpu_ ? CPU_NET_CACHE_CAP : NET_CACHE_CAP;
     while (net_cache.size() > cap) {
         std::string old = net_lru.front();
         net_lru.pop_front();
@@ -254,6 +259,11 @@ void DitVk::evict_nets() {
             // unique_ptr 析构 -> ncnn::Net 析构 -> 释放其私有权重 VkWeightAllocator（device-local 显存）
             net_cache.erase(it);
         }
+        // ⚠️ 顺序不可颠倒：CPU 模式下 ncnn 的权重 Mat 是**零拷贝引用** bin 字节的
+        // （Mat(w, (void*)refbuf)，见 ncnn/src/modelbin.cpp；CPU 上 create_pipeline 是空操作，
+        //  不会像 Vulkan 那样把权重重排进 packed 缓冲），所以必须先销毁 Net 再释放字节，
+        // 否则仍在使用的权重会变成悬垂指针。
+        if (use_cpu_) fcache.erase(old);
     }
 }
 
