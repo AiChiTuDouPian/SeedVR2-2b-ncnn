@@ -172,4 +172,92 @@ private:
     std::mt19937 gen_;
 };
 
+// ==================== PhiloxRandn：对齐 PyTorch CUDA torch.randn ====================
+//
+// 复刻 torch CUDA normal_kernel（ATen/native/cuda/DistributionTemplates.h）在 float32 下的完整链路：
+//   - curand_init(seed, subsequence=t, offset=0)：ctr 起点 = t<<64（skipahead_sequence），key=(seed,0)
+//   - kernel 布局：block=256；grid=min(ceil(N/256), 36*(1536/256)=216)（RTX 5060 Ti: 36 SM）
+//     thread t 第 r 次 curand_normal4 -> ctr = t<<64 + r（128-bit 小端，每调用 +1）
+//     元素写位置 i = t + (4r+ii)*S, S=block*grid, ii=0..3
+//   - _curand_box_muller（curand_normal.h）：u = x*2^-32 + 2^-33；v = y*(2π*2^-32) + (2π*2^-32)/2
+//     s = sqrt(-2*log u)；输出 = sin(v)*s, cos(v)*s（GPU 用 __sincosf 快速近似，CPU 用标准 sinf/cosf，
+//     与 GPU 最大偏差 ~2.3e-6（~19% 元素逐位一致），噪声间 cos≈0.999999999+，图像影响可忽略）
+//   - N=16*H8*W8 等调用必须与官方 torch.randn 的 C-major 线性序一致（noise[c*H8W8 + h*W8 + w]）
+//   - 局限：grid 上限依赖 GPU SM 数，本常量按 RTX 5060 Ti(36SM) 固化；不同 GPU 上官方序列布局不同
+class PhiloxRandn {
+public:
+    explicit PhiloxRandn(uint32_t seed) : seed_(seed) {}
+
+    // 生成 n 个标准正态到 dst（模拟 torch CUDA grid-stride normal4 kernel）
+    void fill(float* dst, size_t n) {
+        const uint64_t block = 256;
+        uint64_t grid = (n + block - 1) / block;
+        const uint64_t cap = 36 * (1536 / 256);   // RTX 5060 Ti: multiProcessorCount * (maxThreadsPerSM/256)
+        if (grid > cap) grid = cap;
+        const uint64_t S = block * grid;
+        const uint64_t rounds = (n + 4 * S - 1) / (4 * S);
+        for (uint64_t t = 0; t < S; t++) {
+            uint32_t ctr = 0;  // 低 64 位 = r（r < 2^32 即够，rounds 很小）
+            for (uint64_t r = 0; r < rounds; r++) {
+                uint32_t out4[4];
+                philox4((uint32_t)t, ctr, out4);
+                float f[4];
+                box_muller4(out4, f);
+                uint64_t base = t + r * 4 * S;
+                for (int ii = 0; ii < 4; ii++) {
+                    uint64_t i = base + (uint64_t)ii * S;
+                    if (i < n) dst[i] = f[ii];
+                }
+                ctr++;
+            }
+        }
+    }
+
+private:
+    static inline uint32_t lo32(uint64_t v) { return (uint32_t)(v & 0xffffffffu); }
+    static inline uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
+
+    // philox4x32-10：ctr = (r_lo, r_hi, t_lo, t_hi)（数值 t<<64 + r），key = (seed, 0)
+    void philox4(uint32_t t, uint64_t r, uint32_t out[4]) const {
+        uint32_t x = lo32(r), y = hi32(r), z = t, w = 0;
+        uint32_t k0 = seed_, k1 = 0;
+        for (int round = 0; round < 10; round++) {
+            // M0*x, M1*z 的 64 位积拆高低
+            uint64_t p0 = (uint64_t)PHILOX_M0 * (uint64_t)x;
+            uint64_t p1 = (uint64_t)PHILOX_M1 * (uint64_t)z;
+            uint32_t lo0 = lo32(p0), hi0 = hi32(p0);
+            uint32_t lo1 = lo32(p1), hi1 = hi32(p1);
+            uint32_t nx = hi1 ^ y ^ k0;
+            uint32_t ny = lo1;
+            uint32_t nz = hi0 ^ w ^ k1;
+            uint32_t nw = lo0;
+            x = nx; y = ny; z = nz; w = nw;
+            k0 += PHILOX_W0; k1 += PHILOX_W1;
+        }
+        out[0] = x; out[1] = y; out[2] = z; out[3] = w;
+    }
+
+    static void box_muller4(const uint32_t u4[4], float f[4]) {
+        // 与 curand 常量逐位一致（float32 位型）
+        static const float K_2PI = b2f(0x30c90fdb);  // 2π*2^-32
+        static const float H_2PI = b2f(0x30490fdb);  // (2π*2^-32)/2
+        static const float INV   = b2f(0x2f800000);  // 2^-32
+        static const float HINV  = b2f(0x2f000000);  // 2^-33
+        for (int j = 0; j < 2; j++) {
+            float u = (float)u4[2 * j] * INV + HINV;
+            float v = (float)u4[2 * j + 1] * K_2PI + H_2PI;
+            float s = std::sqrt(-2.0f * std::log(u));
+            f[2 * j] = std::sin(v) * s;
+            f[2 * j + 1] = std::cos(v) * s;
+        }
+    }
+
+    static const uint32_t PHILOX_W0 = 0x9E3779B9u;
+    static const uint32_t PHILOX_W1 = 0xBB67AE85u;
+    static const uint32_t PHILOX_M0 = 0xD2511F53u;
+    static const uint32_t PHILOX_M1 = 0xCD9E8D57u;
+
+    uint32_t seed_;
+};
+
 } // namespace rng
