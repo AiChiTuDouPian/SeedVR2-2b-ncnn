@@ -36,7 +36,31 @@ cmake --build build-cmake -j
 - `models/m5_graph/`—— **合并计算图权重块**：由 `export/export_dit_graph.py` 从 `models/m5/` 重新生成，**不入库**
   （该目录约 95 GB：每套块图约 9.7 GB × 5 套，另有单 Net 整图与历史备份）。命名见下方「生成合并计算图块」。
 
-请用 `export/` 下的导出脚本从官方 SeedVR2 权重重新导出，或自行放置权重。
+### 从 HuggingFace 下载（推荐）
+
+三个仓库按精度分开，**每个都自包含**（`models/m5` + `models/m6_vae` + 该精度的块图），
+下载任一个即可直接运行：
+
+| 精度 | 仓库 | 体积 | 引擎参数 |
+|---|---|---:|---|
+| fp32 | [`xxzigou/SeedVR2-2b-NCNN`](https://huggingface.co/xxzigou/SeedVR2-2b-NCNN) | 17.5 GB | 默认（逐位对齐基准，最慢） |
+| **bf16** | [`xxzigou/seedVR2-ncnn-bf16`](https://huggingface.co/xxzigou/seedVR2-ncnn-bf16) | 36.8 GB | `--bf16`（**推荐**：范围安全，逐层 cos ≥ 0.9993，比 fp32 快 1.7×） |
+| fp16 | [`xxzigou/seedVR2-ncnn-fp16`](https://huggingface.co/xxzigou/seedVR2-ncnn-fp16) | 17.5 GB | `--fp16`（最快但大激活会溢出，第 30 层 cos 仅 0.90） |
+
+```bash
+# 只拉跑推理必需的部分（bf16 仓库里的 c1/c4 块图变体可不下载）
+hf download xxzigou/seedVR2-ncnn-bf16 --local-dir . \
+  --include "models/m5/*" "models/m6_vae/*" "models/m5_graph/dit_block_bf16_c2_*"
+```
+
+> `models/m5` 是三种精度**共用**的基础权重（DiT 逐层 + 自定义 shader `*.spv`），
+> 只有 `models/m5_graph/` 下的块图区分精度。bf16 仓库另含 `c1`（32 块，缺 `c2` 时的回退路径）
+> 与 `c4`（8 块，实测无收益）变体；只下 `c2`（16 块，引擎默认）即可。
+>
+> ⚠️ 仓库/文件名里的 fp32/fp16/bf16 指**计算精度**，不是权重存储格式——`dit_block_*`（fp32 计算）
+> 与 `dit_block_f16_*` 的权重其实都是 fp16 存储，而 `dit_block_bf16_*` 是 fp32 存储。
+
+也可以自行导出：用 `export/` 下的脚本从官方 SeedVR2 权重重新导出，或手工放置权重。
 
 生成合并计算图块：
 
@@ -51,7 +75,7 @@ python export/export_dit_graph.py models/m5 32 2 4   dit_block_1
 python export/export_dit_graph.py models/m5 32 0 1   dit_block_bf16_0
 # ... 每层一块，直到 32 层（共 32 块）
 
-# bf16 块（chunk=2，16 块）—— 引擎默认路径，比 chunk=1 快约 9%（见性能报告 §3）
+# bf16 块（chunk=2，16 块）—— 引擎默认路径，净图结构开销比 chunk=1 低约 1.8%（见性能报告 §3.2）
 python export/export_dit_graph.py models/m5 32 0 2   dit_block_bf16_c2_0
 python export/export_dit_graph.py models/m5 32 2 4   dit_block_bf16_c2_1
 # ... 每 2 层一块，直到 32 层（共 16 块）
@@ -159,24 +183,29 @@ CPU 与 GPU 在 360p fp32 下几乎逐位一致（cos 1.000000 / PSNR 80.52 dB�
 - **DiT 占 wall 的 85%~95%**，是唯一值得优化的部分。
 - 低精度 graph 比 fp32 快 **1.7~1.8×**。
 - fp32 `forward_latent` 的 DiT 构成（1080p）：GEMM 52~58% / AWA 自定义算子 13~15% / CPU 循环 28~35%。
-- **块图 chunk（每块层数）已默认 2**，实测（bf16，`diag/chunk_test/`）：
+- **块图 chunk（每块层数）已默认 2**。
+  ⚠️ **端到端 DiT 数字不可直接用来比较 chunk**——它含「权重加载」这个与 chunk 无关、却随
+  页缓存命中率摆动的分量（每套块图约 9.7 GB > 本机 15.8 GB 内存，装不下全部）。早期单次测量
+  曾得出「1080p -8.9%」，实因 chunk=2/4 块图刚导出、正处于页缓存中而被系统性偏袒。
+  改为**独占 + 交错 + 归一化指标**（`DiT − 读盘 − load_model`）重测：
 
-  | 分辨率 | chunk=1（32 块） | chunk=2（16 块） | chunk=4（8 块） |
+  | 指标（1080p bf16） | chunk=1 | chunk=2 | 差异 |
   |---|---:|---:|---:|
-  | 360p | 38.98 s | 39.05 s | — |
-  | 720p | 60.62 s | **59.50 s** | — |
-  | 1080p | 105.53 s | **96.21 s（-8.9%）** | 96.57 s（无进一步收益） |
+  | DiT（端到端） | 98.19 s | 97.33 s | -0.9% |
+  | 读盘 + `load_model` | 29.22 s | 29.60 s | — |
+  | **净图结构开销** | **68.96 s** | **67.73 s** | **-1.8%** |
 
-  三者输出与 chunk=1 **逐位一致**（cos 1.000000 / PSNR inf）。
+  即 chunk 1→2 是**小幅但真实**的优化（净开销 **-1.8%**，端到端 -0.9%），**不是 8.9%**；
+  chunk=4 无进一步收益。三档输出与 chunk=1 **逐位一致**（cos 1.000000 / PSNR inf）。
   收益来自**减少每块固定开销**（Net/Extractor 创建、窗口几何注入、块边界 I/O），
-  其中块边界 I/O ∝ latent Lv，故收益随分辨率增长（360p ≈ 0% → 1080p -8.9%）。
-  早前「块间搬运占 DiT 70%、chunk 可降 35%~45%」的估计已**被实测推翻**——非 extract 段的大头其实是
-  权重加载（与 chunk 无关）。详见性能报告 §3。
+  其中块边界 I/O ∝ latent Lv，故低分辨率下几乎无用（360p 三档均 ≈ 39 s）。
+  早前「块间搬运占 DiT 70%、chunk 可降 35%~45%」的估计同样**被实测推翻**——非 extract 段的大头
+  其实是权重加载（与 chunk 无关）。详见性能报告 §3.1~§3.2。
 - **当前最大单项：每块的权重加载**（1080p `load_model` 1368 ms/块 + 读盘 396 ms/块，
   16 块合计 ≈ 28 s ≈ DiT 的 **29%**）。
   试过「把权重 bin 改存 fp32，绕开 ncnn `Mat::from_float16()` 的单线程 fp16→fp32 转换」——
   实测**否决**：转换只值 520 ms/块，而 bin 体积翻倍让读盘多花 637 ms/块，DiT 反而 **+1.2%**。
-  要省只能靠「少加载几次」（帧序列常驻）。详见性能报告 §3.1。
+  要省只能靠「少加载几次」（帧序列常驻）。详见性能报告 §3.3。
 - 帧序列模式下 DiT 常驻：720p bf16 首帧 65.7 s → **稳态 33.5 s/帧**（省约 47%）。
   16 GB 显存下驻留仅 720p bf16 可行（低精度块权重常驻 10.18 GB）。
 - **逐层精度**：bf16 在 30 层后 cos ≥ 0.9993（几乎无损）；fp16 第 12 层跌破 0.996、第 30 层仅 0.90~0.93
@@ -185,8 +214,11 @@ CPU 与 GPU 在 360p fp32 下几乎逐位一致（cos 1.000000 / PSNR 80.52 dB�
 ## 已知限制
 
 - **4K（3840×2160）暂不支持**：VAE 在 4K 对 270×480=129600 个 mid-token 做 O(n²) self-attention，显存远超 16GB（fp32 / bf16 均在 VAE 阶段 `vkAllocateMemory failed`）。DiT graph 本身正确，需实现 **tiled VAE**（分块编/解码 + 重叠融合）才能打通 4K。
-- **CPU 路径 1080p 不可用**：本机系统内存仅 15.8 GB，而引擎 CPU 模式把全部层权重常驻
-  （`evict_nets()` 的 `cap=1024`）+ `fcache` 永久驻留 bin 字节。修复方向见性能报告 §4。
+- **CPU 路径 1080p（原为内存墙，已修复）**：引擎 CPU 模式原把全部层权重常驻
+  （`evict_nets()` 的 `cap=1024`，CPU 上解码权重恒为 fp32 ≈ 12.2GB）+ `fcache` 永久驻留
+  bin 字节（7.9GB），工作集约 20GB > 本机 15.8GB 内存 → DiT 第 20~24 层 OOM。
+  现改为 `cap=4` + 淘汰时一并释放 `fcache` 字节（工作集 ~1GB），代价是每次访问重新解码。
+  详见性能报告 §4。
 - **fp16 不推荐**（见上，失真）。
 - ncnn 源码（`NCNN_DIR` 指向的库）不可修改，本项目仅在自有代码内修复 bug / 扩展。
 
