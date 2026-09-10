@@ -227,27 +227,41 @@ fp16 存储时 ncnn `VkTransfer` 上传把 fp32 逐元素压成 half 写入 buff
 
 ---
 
-## 6. 性能数据与优化方向（2026-09-10 实测 1080p）
+## 6. 性能数据与优化方向
 
-输入 1131×960 → `--resolution 1080`（输出 1272×1080，Lv=5440，nwin ns=16/sh=25，TXT=58）：
+> 完整数据（含 360p/720p/1080p × fp32/fp16/bf16 × GPU/CPU 与 PyTorch 精度对比）见
+> [`bench/PERFORMANCE_ANALYSIS.md`](../bench/PERFORMANCE_ANALYSIS.md) 与
+> [`bench/PT_COMPARISON.md`](../bench/PT_COMPARISON.md)。本节只摘录要点。
 
-| 配置 | 路径 | wall | DiT 32 层 | 备注 |
-|---|---|---|---|---|
-| GPU fp32 | forward_latent（graph fp32 1080p 显存不够） | 185 s | 176.5 s | DiT 内：GEMM 56-59% / AWA 13-15% / CPU 循环 28-30% |
-| GPU bf16 | graph 32 块 chunk=1 | 101 s | 92.6 s | 与 fp32 视觉一致 |
-| GPU fp16 | graph 32 块 chunk=1 | 102 s | 94.3 s | 与 fp32 视觉一致 |
-| CPU fp32 | `--cpu` forward_latent | — | ~8 层/148s | **15.8GB 内存不足，~20 层后 OOM 崩溃**（CPU net 缓存上限 1024 全驻留） |
+输入 1131×960，seed 42，`--no-colorfix`（Lv = latent token 数）：
 
-**关键瓶颈：graph chunk=1 的块间搬运占 DiT 的 ~67%**（每块 2.9s 中 extract/下载 ≈1.95s）。原因：每块末要把 vid(5440×2560×4B≈56MB) + txt 下载回 CPU，下一块再上传，32 块合计搬 ~3.5GB 走 PCIe。
+| 分辨率 | latent Lv | fp32（forward_latent） | bf16（graph 32 块 chunk=1） | fp16（graph） |
+|---|---:|---:|---:|---:|
+| 360p (424×360) | 621 | wall 49 s / DiT 45.1 s | **40 s / 37.7 s** | 42 s / 39.4 s |
+| 720p (848×720) | 2385 | wall 100 s / DiT 94.5 s | **61 s / 57.1 s** | 65 s / 60.2 s |
+| 1080p (1272×1080) | 5440 | wall 196 s / DiT 186.0 s | **114 s / 105.6 s** | 113 s / 105.4 s |
+
+- **DiT 占 wall 的 85%~95%**；低精度 graph 比 fp32 快 **1.7~1.8×**；fp16 与 bf16 速度相同
+  （都被块间搬运支配）但 fp16 精度差一个量级 → 生产选 bf16。
+- fp32 `forward_latent` 的 DiT 内部构成（1080p 每 8 层计时段）：
+  **GEMM 52~58% / AWA 13~15% / CPU 循环 28~35%**（分辨率越低 GEMM 占比越高，360p 达 74~81%）。
+- CPU 360p fp32 可跑通：DiT 267 s（GEMM 76~79%，AWA=0 因 CPU 走 C++ 注意力参考）；
+  **CPU 1080p 不可行** —— 系统内存仅 15.8 GB，而 CPU 模式 net 缓存上限 `cap=1024`
+  （≈全权重常驻）+ `fcache` 永久驻留 bin 字节，实测在第 20~24 层 OOM 崩溃（rc=132）。
+
+**关键瓶颈：graph chunk=1 的块间搬运占 DiT 的 ~70%**（1080p 每块 3.3 s 中 extract/下载 ≈2.3 s）。
+原因：每块末要把 vid(5440×2560×4B≈56MB) + txt 下载回 CPU，下一块再上传，32 块合计搬 ~3.5 GB 走 PCIe。
 
 **按收益排序的优化方向**：
 
-1. **chunk 合并（首选，零风险）**：块图从 1 层/块 → 2~4 层/块，块数 32→16→8，块间搬运直接减半/减 3/4 → DiT 估再快 35-50%。已有 fp32 chunk=2 先例，只需重导出 bf16/f16 块图 + 引擎确认每块输出 blob 名随 l1 变化即可。
-2. **fp32 路径块化**：fp32 也走 graph + 逐块释放（现 chunk=2 1080p OOM），需解决显存或接受 forward_latent。
-3. **减少下载量**：块间实际只需 vid/txt 残差流，可尝试半精度传输（bf16 块间已 fp32 cast 再传——可省一半带宽，注意累积精度）。
-4. **CPU 内存修复**：CPU 模式 net 缓存 cap 从 1024 改小 + `fcache` 不长期驻留 bin 字节，即可让 15.8GB 机器跑通 CPU 1080p（当前架构按「CPU 无显存压力」假设设计，未考虑系统 RAM 15.8GB 的约束）。
-
-扩展参考（360p，fp32 forward）：整帧 ~51s；CPU 360p fp32 DiT ~137s（GPU:CPU ≈ 1:2.7，CPU 1080p 更差是因为内存墙而非算力线性外推）。
+1. **chunk 合并（首选，零风险）**：块图从 1 层/块 → 2~4 层/块，块数 32→16→8，块间搬运直接减半/减 3/4
+   → DiT 估再快 35-45%。已有 fp32 chunk=2 先例，只需重导出 bf16/f16 块图 + 引擎确认每块输出 blob 名随 l1 变化即可。
+2. **CPU 内存修复（几行代码）**：CPU 模式 `cap` 改小 + `fcache` 不长期驻留 bin 字节，
+   即可让 15.8GB 机器跑通 CPU 1080p。
+3. **减少下载量**：块间实际只需 vid/txt 残差流，可尝试半精度传输（省一半 PCIe 带宽，注意累积精度）。
+4. **fp32 路径块化**：fp32 也走 graph + 逐块释放（现 chunk=2 1080p OOM），需解决显存或接受 forward_latent。
+5. **int8 量化：不建议**。ncnn 的 int8 只对**已量化模型**生效（无运行期开关），且 AWA/AdaCompose/
+   RMSNorm/Cast 均无 int8 变体，只能 fp32 包夹 GEMM；扩散模型激活对量化敏感，收益窄、风险高。
 
 ---
 

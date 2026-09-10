@@ -63,47 +63,85 @@ seedvr2_run.exe <frames_in/> <frames_out/> [--resolution N] [--bf16] [--seed N]
 
 | 参数 | 说明 |
 |------|------|
-| `--resolution N` | 输入图最短边 bicubic resize 到 N（如 360 / 1080 / 2160），再按 8× 下采样得到 latent 网格 |
-| `--fp16` / `--bf16` | 精度选项；默认 fp32。bf16 走 tensor core 更快；fp16 已实现对齐但失真，不推荐 |
-| `--seed N` | 随机种子（图片默认 0，视频每帧 seed = base + frame_idx 保证逐帧确定） |
-| `--no-graph` | 禁用合并计算图，回退旧路径 `forward_latent`（逐算子 Vulkan 注意力，慢且高分辨率失真，仅用于对拍） |
+| `--resolution N` | 输入图最短边 bicubic resize 到 N（如 360 / 720 / 1080），再按 8× 下采样得到 latent 网格；输出保持原始宽高比 |
+| `--fp16` / `--bf16` | 精度选项；默认 fp32。两者都走 tensor core（cooperative matrix），bf16 激活层间自动回落 fp32 存储故精度远好于 fp16 |
+| `--seed N` | 随机种子，**默认 42**（与官方 CLI `--seed 42` 一致）；帧序列模式每帧 seed = base + frame_idx |
+| `--no-graph` | 禁用合并计算图，回退 `forward_latent`（逐层 ncnn Net + C++ 注意力参考）。fp32 1080p 因显存限制走此路径 |
+| `--cpu` | 纯 CPU 推理（关闭 Vulkan compute，自动强制 `--no-graph`）。注意本机 15.8GB 内存下 1080p 会 OOM，见下 |
+| `--no-colorfix` | 关闭 LAB 色彩校正。**与官方 PyTorch 对拍时必须加**（官方对应 `--color_correction none`） |
 | `--graphdir DIR` | 指定合并计算图目录（默认 `models/m5_graph`） |
 
 环境变量：
 
 - `SEEDVR_GRAPH_RELEASE=1`：强制逐块释放 DiT 权重（图片模式默认即逐块释放，帧序列模式默认常驻以保留帧间加速）。
+- `SEEDVR_GRAPH_CHUNK=N` / `SEEDVR_BLOCK_PREFIX=...`：覆盖图块层数与块文件前缀（二分实验用）。
+- 诊断 dump（默认关闭，env 门控）：`SEEDVR_DUMP_B0MID[_GPU]`、`SEEDVR_DUMP_BLOCKOUT`、`SEEDVR_DUMP_VIDGRID`、`SEEDVR_DUMP_TAIL`、`SEEDVR_LOAD_X0=<bin>`、`SEEDVR_NO_REUSE`、`SEEDVR_FULLWIN` 等。
+
+> ⚠️ **与官方 PyTorch 对拍的口径要求（否则数值无意义）**
+> 1. 色彩校正必须两边同时关闭：ncnn 加 `--no-colorfix`，官方用 `--color_correction none`。
+>    两边算法实现不同（ncnn 为 LAB transfer 强度 0.8，官方为小波多尺度），只关一边会引入全局色调差，
+>    1080p PSNR 会从 **46.6dB 掉到 27.4dB**。
+> 2. seed 必须一致（默认都是 42）。引擎的噪声用 `rng::PhiloxRandn` 复刻官方 CUDA Philox4x32-10，
+>    与 `torch.randn(CUDA)` 同源，因此噪声可逐位对齐。
+> 3. DiT 权重来源要认：官方 fp8 权重与 ncnn 导出的 fp16 权重不同源，会有约 9% 底噪；
+>    图像级 ground truth 请用官方 **fp16** 全流程图。
 
 说明：
 
 - 视频模式为官方 `batch_size=1` 的特例（逐帧独立，不做时序融合）。
-- **图片模式**默认逐块释放 DiT 权重（显存安全）；**帧序列模式** DiT 权重常驻（bf16 10GB < 16GB 显存，帧间零重载，约 5× 加速）。
+- **图片模式**默认逐块释放 DiT 权重（显存安全）；**帧序列模式** DiT 权重常驻（bf16 约 10.2GB < 16GB 显存，帧间零重载）。
 
 ## 精度与质量现状
 
-| 精度 | 1080p 可用性 | 与 fp32 参考 PSNR | 说明 |
-|------|------------|------------------|------|
-| **fp32（默认）** | ✅ 正确 | cos=1.0 逐位一致 | graph 路径与 CPU `forward_latent` 参考逐位一致；单图墙钟 ~140s（含首次 pipeline 编译 ~30s） |
-| **bf16** | ✅ 可用（已修复 segfault） | ~14.5 dB（bf16 精度水平） | graph 路径 1080p 之前段错误，已修复；默认图片模式自动逐块释放；1080p 墙钟 ~118s |
-| **fp16** | ❌ 失真（油画化） | ~15 dB 但内容错乱 | AwaLayer 已加 fp16↔fp32 cast 分支修复位级错乱，但 graph 的 ada/RMSNorm 在 fp16 域溢出 65504 → 输出碎片状失真。**已放弃 fp16，建议用 bf16** |
+以官方 PyTorch fp16 全流程为 ground truth，**椎名真白 1131×960 / seed 42 / 色彩校正两边同关**
+（完整报告与口径说明见 [`bench/PT_COMPARISON.md`](bench/PT_COMPARISON.md)）：
 
-> 旧路径 `forward_latent`（非 graph）：360p 正常，但 1080p 起 AWA 手动注意力分支失真（32.89 dB），仅用于开发期对拍，不推荐日常使用。
+| 精度 | vs PyTorch @1080p | vs ncnn-fp32 @1080p | 1080p 耗时 | 结论 |
+|---|---:|---:|---:|---|
+| **fp32（默认）** | **cos 0.999977 / 46.55 dB** | — | 196 s | 与官方数值等价（SSIM 0.9978） |
+| **bf16** | **cos 0.999962 / 45.45 dB** | cos 0.999981 / **48.16 dB** | **114 s** | **≈无损，生产推荐** |
+| fp16 | cos 0.999241 / 31.06 dB | cos 0.999203 / 30.53 dB | 113 s | 速度与 bf16 相同但精度差一个量级，**不推荐** |
 
-## 推理性能（RTX 5060 Ti 16GB，合并计算图，单图）
+其他分辨率（vs PyTorch，fp32 / bf16 / fp16）：
 
-| 分辨率 | 精度 | VAE enc | DiT(32层) | VAE dec | 计算段合计 | 单图墙钟* |
-|--------|------|--------:|----------:|--------:|-----------:|----------:|
-| 360p (540×360) | fp32 | 1.08s | 31.91s | 1.25s | 34.2s | ~64s |
-| 360p | bf16 | 1.01s | 35.62s | 2.42s | 39.1s | ~69s |
-| 1080p (1620×1080) | fp32 | 3.76s | 100.30s | 5.46s | 109.5s | ~140s |
-| 1080p | bf16 | 3.58s | 79.26s | 5.12s | 88.0s | ~118s |
+| 分辨率 | 输出 | fp32 | bf16 | fp16 |
+|---|---|---:|---:|---:|
+| 360p | 424×360 | 23.08 dB | 22.89 dB | 20.36 dB |
+| 720p | 848×720 | 34.81 dB | 34.80 dB | 27.46 dB |
+| 1080p | 1272×1080 | **46.55 dB** | **45.45 dB** | 31.06 dB |
 
-\* 墙钟 = 计算段 + 首次冷启动（~700 个 Vulkan pipeline 编译，约 30s）；同进程跑第 2 张起冷启动归零。
+> **为什么 360p/720p 的 PSNR 偏低？** 因为源图 1131×960 在这两档下是被**缩小**的
+> （0.375× / 0.75×），而 SeedVR2 是超分模型，缩小任务属训练分布之外，微小数值差异会被放大。
+> 对照实验（源图预缩到 212×180 → 360p，变成 2.0× 真放大）显示 PSNR 回到 **45.82 dB**。
+> 即：**只要任务是真放大（≥1×），ncnn 与 PyTorch 的一致性稳定在 45~46.6 dB**。
+> 详见 [`bench/PT_COMPARISON.md`](bench/PT_COMPARISON.md) §4。
 
-对比：旧逐算子路径 1080p DiT 184s → graph fp32 100s（**1.84× 加速**）。瓶颈为 ncnn fp32 不吃 tensor core（GEMM 慢）+ 块间 CPU 往返；bf16 已通过 tensor core 缓解。
+CPU 与 GPU 在 360p fp32 下几乎逐位一致（cos 1.000000 / PSNR 80.52 dB）。
+
+## 推理性能（RTX 5060 Ti 16GB，单图）
+
+完整报告见 [`bench/PERFORMANCE_ANALYSIS.md`](bench/PERFORMANCE_ANALYSIS.md)。
+
+| 分辨率 | latent Lv | fp32（forward_latent） | bf16（graph 32 块） | fp16（graph 32 块） |
+|---|---:|---:|---:|---:|
+| 360p (424×360) | 621 | 49 s（DiT 45.1 s） | **40 s**（DiT 37.7 s） | 42 s（DiT 39.4 s） |
+| 720p (848×720) | 2385 | 100 s（DiT 94.5 s） | **61 s**（DiT 57.1 s） | 65 s（DiT 60.2 s） |
+| 1080p (1272×1080) | 5440 | 196 s（DiT 186.0 s） | **114 s**（DiT 105.6 s） | 113 s（DiT 105.4 s） |
+
+- **DiT 占 wall 的 85%~95%**，是唯一值得优化的部分。
+- 低精度 graph 比 fp32 快 **1.7~1.8×**。
+- fp32 `forward_latent` 的 DiT 构成（1080p）：GEMM 52~58% / AWA 自定义算子 13~15% / CPU 循环 28~35%。
+- **当前最大瓶颈：低精度 graph 的块间搬运**（32 块，每块 download+upload 约 2.3 s，
+  合计约 74 s ≈ DiT 的 70%，32 块共约 3.5 GB 过 PCIe）。
+  **把 chunk 1→2/4（32 块→16/8 块）预计可让 DiT 再降 35%~45%**，是首选优化。
+- 帧序列模式下 DiT 常驻：720p bf16 首帧 65.7 s → **稳态 33.5 s/帧**（省约 47%）。
+  16 GB 显存下驻留仅 720p bf16 可行（低精度块权重常驻 10.18 GB）。
 
 ## 已知限制
 
 - **4K（3840×2160）暂不支持**：VAE 在 4K 对 270×480=129600 个 mid-token 做 O(n²) self-attention，显存远超 16GB（fp32 / bf16 均在 VAE 阶段 `vkAllocateMemory failed`）。DiT graph 本身正确，需实现 **tiled VAE**（分块编/解码 + 重叠融合）才能打通 4K。
+- **CPU 路径 1080p 不可用**：本机系统内存仅 15.8 GB，而引擎 CPU 模式把全部层权重常驻
+  （`evict_nets()` 的 `cap=1024`）+ `fcache` 永久驻留 bin 字节。修复方向见性能报告 §4。
 - **fp16 不推荐**（见上，失真）。
 - ncnn 源码（`NCNN_DIR` 指向的库）不可修改，本项目仅在自有代码内修复 bug / 扩展。
 
@@ -120,5 +158,13 @@ seedvr2_run.exe <frames_in/> <frames_out/> [--resolution N] [--bf16] [--seed N]
   - `main.cpp` —— CLI 入口与参数解析。
   - `shaders/*.comp` —— 自定义 GLSL compute shader（awa / awa_coalesce / awa_init / cast_f16_f32 / cast_f32_f16 / cast_bf16_f32 / cast_f32_bf16）。
 - `export/` —— PyTorch → ncnn 的权重导出脚本（`export_dit_graph.py` 合并 32 层为计算图块）。
-- `tools/` —— 调试 / 对拍辅助脚本（与官方 PyTorch 参考实现比对）。
+- `tools/` —— 调试 / 对拍辅助脚本（与官方 PyTorch 参考实现比对）：
+  - `pt_reference.py` —— 生成官方 PyTorch 参考图（固定对拍口径）
+  - `img_metrics.py` —— 两张 PNG 的 cos / PSNR / mean|d| / max|d| / SSIM
+  - `benchmark.cpp` —— 逐阶段计时 benchmark（`seedvr2_bench`）
+- `bench/` —— **性能与精度基准**（脚本 + 报告 + PyTorch 基准图）：
+  - `run_pt_compare.sh` —— ncnn × {fp32,fp16,bf16} × {360,720,1080} vs 官方 PyTorch 矩阵
+  - `run_perf_cpu_gpu.sh` —— fp16/bf16/fp32 × GPU/CPU @1080p 性能批测
+  - `PT_COMPARISON.md` / `PERFORMANCE_ANALYSIS.md` —— 对比与性能分析报告
+- `docs/` —— 技术文档（`GPU加速与自定义算子技术文档.md`）；`docs/archive/` 为历史快照。
 - `third_party/` —— stb_image 头文件（图像读写）。

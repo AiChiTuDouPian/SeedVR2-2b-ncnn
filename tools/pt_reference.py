@@ -31,6 +31,15 @@ def main():
     inp, out, res = sys.argv[1], sys.argv[2], sys.argv[3]
     extra = sys.argv[4:]
 
+    # ⚠ 必须先转绝对路径：下面 os.chdir(COMFY) 会让相对路径失效
+    #   （inference_cli.py 依赖相对路径 ./models，故必须 chdir，不能改它）
+    inp = os.path.abspath(inp)
+    out = os.path.abspath(out)
+    if not os.path.isfile(inp):
+        print("[pt_ref] 输入不存在: %s" % inp)
+        return 1
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+
     os.chdir(COMFY)  # inference_cli.py 依赖相对路径 ./models
     sys.path.insert(0, COMFY)
 
