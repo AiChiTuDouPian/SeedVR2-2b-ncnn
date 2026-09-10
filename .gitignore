@@ -9,6 +9,8 @@ models/m5_nospv/
 models/m6_vae/
 # 合并计算图权重块（fp32 16块 + bf16 32块 + f16 32块，53G+）；由 export/export_dit_graph.py 重新生成，不入库
 models/m5_graph/
+# AdaCompose 变体图块（75G+），同上由导出脚本生成
+models/m5_graph_adacomp/
 
 # ---------- Compiled shaders (由 src/shaders/*.comp 经 CMake + glslangValidator 重新生成) ----------
 models/m5/*.spv
@@ -37,3 +39,17 @@ log_*.txt
 
 # ---------- 诊断 dump / 对比产物（不入库，防 git add -A 整树误入） ----------
 diag/
+# 历史诊断 dump 目录（GB 级，保留在磁盘但不入库）
+diag_awa/
+diag_backup_*/
+# 运行期工作目录与输出（可随时重建）
+e2e_work/
+output/
+output_fp16/
+test_frames_out/
+
+# ---------- 例外：对比所需的小体积基准图与输入图（保证对比结果可复现） ----------
+!input/*.png
+!input/*.jpg
+!bench/pt_ref/*.png
+!docs/img/*.png
