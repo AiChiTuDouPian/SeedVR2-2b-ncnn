@@ -1,10 +1,15 @@
 #version 450
 
 // fp32 -> bf16（flat 线性布局；输出按 uint 打包：每 uint 2 个 bf16；round-to-nearest-even）
+// ⚠️ 写回用 atomicCompSwap CAS 循环：偶数/奇数元素由两个并发线程写同一 uint 字，
+// 非原子 读-改-写 理论上存在跨 lane 数据竞争，改为 CAS 消除该隐患。
+// 与 cast_f32_f16.comp 同构；bf16 高位对齐无需 unpack/pack 重排，只替换目标半字。
+// 说明：本 GPU 上旧写法实测结果相同（属防御性加固）；bf16 graph 整图乱码的真根因
+//       是块间提取的 CPU extract 语义，见 commit a19894d 与 docs/GPU加速与自定义算子技术文档.md §5.1。
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
 layout(binding = 0) readonly buffer b_in  { float inb[]; };
-layout(binding = 1)          buffer b_out { uint o[]; };   // 读-改-写打包，不能 writeonly
+layout(binding = 1)          buffer b_out { uint o[]; };   // CAS 读写，不能 writeonly
 
 layout(push_constant) uniform parameter
 {
@@ -16,9 +21,14 @@ void main()
     int gid = int(gl_GlobalInvocationID.x);
     if (gid >= p.total) return;
     uint u = floatBitsToUint(inb[gid]);
-    uint r = (u + 0x7FFFu + ((u >> 16) & 1u)) >> 16;   // round-to-nearest-even
-    if ((gid & 1) == 1)
-        o[gid >> 1] = (o[gid >> 1] & 0xFFFFu) | (r << 16);
-    else
-        o[gid >> 1] = (o[gid >> 1] & 0xFFFF0000u) | r;
+    uint r = (u + 0x7FFFu + ((u >> 16) & 1u)) >> 16;   // round-to-nearest-even -> bf16 位型（低 16 位）
+    uint w = uint(gid) >> 1;
+    uint shift = (uint(gid) & 1u) == 1u ? 16u : 0u;
+    uint mask = 0xFFFFu << shift;
+    uint old_v, new_v;
+    do
+    {
+        old_v = atomicCompSwap(o[w], 0u, 0u);   // 原子读当前字
+        new_v = (old_v & ~mask) | (r << shift);
+    } while (atomicCompSwap(o[w], old_v, new_v) != old_v);
 }

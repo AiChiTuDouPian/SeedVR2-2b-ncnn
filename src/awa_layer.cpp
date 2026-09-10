@@ -181,6 +181,19 @@ int AwaLayer::create_pipeline(const ncnn::Option& opt)
         return -1;
     }
 
+    // fp32 输入复制 pipeline（把 vqkv/tqkv 复制到独立 buffer，规避图内 blob 复用覆盖输入）
+    {
+        std::vector<uint32_t> cspv2;
+        if (read_spv_file(spv_dir_ + "awa_copy.spv", cspv2)) {
+            copy_pipe_ = new ncnn::Pipeline(vkdev);
+            copy_pipe_->set_local_size_xyz(128, 1, 1);
+            if (copy_pipe_->create(cspv2.data(), cspv2.size() * 4, std::vector<ncnn::vk_specialization_type>()) != 0) {
+                fprintf(stderr, "[AwaLayer] FAIL create copy pipeline\n");
+                delete copy_pipe_; copy_pipe_ = nullptr;
+            }
+        }
+    }
+
     // 低精度（bf16）I/O 转换 pipeline（cast_bf16_f32 / cast_f32_bf16）
     {
         std::vector<uint32_t> s1;
@@ -233,6 +246,7 @@ int AwaLayer::destroy_pipeline(const ncnn::Option& /*opt*/)
     if (awa_pipe_) { delete awa_pipe_; awa_pipe_ = nullptr; }
     if (coal_pipe_) { delete coal_pipe_; coal_pipe_ = nullptr; }
     if (init_pipe_) { delete init_pipe_; init_pipe_ = nullptr; }
+    if (copy_pipe_) { delete copy_pipe_; copy_pipe_ = nullptr; }
     if (b2f_pipe_) { delete b2f_pipe_; b2f_pipe_ = nullptr; }
     if (f2b_pipe_) { delete f2b_pipe_; f2b_pipe_ = nullptr; }
     if (h2f_pipe_) { delete h2f_pipe_; h2f_pipe_ = nullptr; }
@@ -342,6 +356,15 @@ int AwaLayer::forward(const std::vector<ncnn::VkMat>& bottom_blobs,
         ncnn::VkMat d; d.w = src.w * src.h; d.h = 1; d.c = 1;
         cmd.record_pipeline(bf16 ? f2b_pipe_ : f2h_pipe_, b, c, d);
     };
+    // fp32 输入复制：把 vqkv/tqkv 复制到独立 buffer，规避 ncnn 图内 blob 复用覆盖输入（v_attn_0 cos 0.877 根因）。
+    // 低16位模式本就走 cast_l2f 复制；fp32 模式需显式 copy_pipe_。
+    auto copy_f = [&](const ncnn::VkMat& src, ncnn::VkMat& dst) {
+        dst.create(src.w, src.h, 4u, opt.blob_vkallocator);
+        std::vector<ncnn::VkMat> b(2); b[0] = src; b[1] = dst;
+        std::vector<ncnn::vk_constant_type> c(1); c[0].i = src.w * src.h;
+        ncnn::VkMat d; d.w = src.w * src.h; d.h = 1; d.c = 1;
+        if (copy_pipe_) cmd.record_pipeline(copy_pipe_, b, c, d);
+    };
     if (low16) {
         cast_l2f(vqkv, vqkv_f);
         cast_l2f(tqkv, tqkv_f);
@@ -350,6 +373,12 @@ int AwaLayer::forward(const std::vector<ncnn::VkMat>& bottom_blobs,
         toutw_f.create(DIM, nwin_ * TXT_, 4u, opt.blob_vkallocator);
         pq = &vqkv_f; pt = &tqkv_f; pv = &vattn_f; ptt = &tattn_f; ptw = &toutw_f;
     } else {
+        // fp32 模式：复制输入，使 partition 读的是独立副本而非可能被复用的 v_qkv_0 buffer
+        vqkv_f.create(vqkv.w, vqkv.h, 4u, opt.blob_vkallocator);
+        tqkv_f.create(tqkv.w, tqkv.h, 4u, opt.blob_vkallocator);
+        copy_f(vqkv, vqkv_f);
+        copy_f(tqkv, tqkv_f);
+        pq = &vqkv_f; pt = &tqkv_f;
         vattn.create(DIM, Lv_, 4u, opt.blob_vkallocator);
         tattn.create(DIM, TXT_, 4u, opt.blob_vkallocator);
         toutw_.create(DIM, nwin_ * TXT_, 4u, opt.blob_vkallocator);

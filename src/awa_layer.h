@@ -97,6 +97,7 @@ private:
     ncnn::Pipeline* awa_pipe_ = nullptr;
     ncnn::Pipeline* coal_pipe_ = nullptr;
     ncnn::Pipeline* init_pipe_ = nullptr;
+    ncnn::Pipeline* copy_pipe_ = nullptr;   // fp32 输入复制（规避图内 blob 复用覆盖输入）
     // 低精度（bf16/fp16）模式：AWA I/O 在层内转换（输入 低16->fp32 / 输出 fp32->低16）
     ncnn::Pipeline* b2f_pipe_ = nullptr;   // cast_bf16_f32.spv（bf16 -> fp32）
     ncnn::Pipeline* f2b_pipe_ = nullptr;   // cast_f32_bf16.spv（fp32 -> bf16）

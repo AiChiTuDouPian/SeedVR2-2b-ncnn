@@ -1,14 +1,8 @@
 #version 450
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
-// AWA (Adaptive Window Attention) — 多线程优化版
-// 复刻 dit_vk.cpp::awa_forward 的：qk_norm -> window partition(gather) ->
-//   mmrope3d(RoPE) -> varlen SDPA(含 txt 重复) -> reverse(scatter) + txt 平均由宿主做。
-//
-// 并行策略（vs 旧版 local_size=1×1×1 每 invocation 串行处理一个 query）：
-//   - 每个 workgroup(128 线程) 处理一个 (window, head) 的全部 S 个 query；
-//   - 共享内存缓存 K/V 块(BK=64)：key 的 qk_norm+RoPE 每块只算一次，块内所有 query 复用，
-//     把 key 处理从「S 个 query × 2 遍」降到「ceil(S/128)×ceil(S/BK)」次（约 40× 减少）；
-//   - online softmax 单遍遍历（等价原两遍 softmax，免存 score 大数组）。
+// AWA (Adaptive Window Attention) — 两遍 softmax 版
+// partition -> qk_norm -> mmrope3d(RoPE) -> varlen SDPA(两遍 softmax, 与 CPU awa_forward 一致) -> reverse
+// 每个 workgroup 处理一个 (window, head)；query 块(128) 内线程逐 query 两遍遍历全部 key。
 //
 // 绑定顺序 = record_pipeline 的 bindings[0..11]；参数走 push_constant(parameter)。
 // dispatcher：w=1, h=HEADS, c=nwin（每个 workgroup 一个 window+head）。
@@ -40,16 +34,52 @@ layout(binding = 9)  readonly buffer b_nkt { float nkt[]; };     // HEAD_D
 layout(binding = 10) writeonly buffer b_vattn { float vattn[]; };// Lv * DIM
 layout(binding = 11) writeonly buffer b_toutw { float toutw[]; };// nwin*TXT * DIM
 
-#define HD 128        // HEAD_D 固定 128（共享内存数组需编译期常量）
-#define BK 64         // K/V 块大小：sK+sV = 2*64*128*4B = 64KB 共享内存
+#define HD 128
 
-shared float sK[BK * HD];   // qk_norm + RoPE 后的 K
-shared float sV[BK * HD];   // V（无 norm/rope）
+// qk_norm + RoPE 一个 token（vid 或 txt），写入 out
+void prep_token(int tok, int is_vid, int fbase, int is_q,
+                const int base, const int QKV,
+                out float outq[HD])
+{
+    int d;
+    for (d = 0; d < HD; d++) {
+        if (is_vid != 0) {
+            outq[d] = is_q != 0 ? vqkv[tok * QKV + 0 * p.DIM + base + d]
+                                : vqkv[tok * QKV + 1 * p.DIM + base + d];
+        } else {
+            outq[d] = is_q != 0 ? tqkv[tok * QKV + 0 * p.DIM + base + d]
+                                : tqkv[tok * QKV + 1 * p.DIM + base + d];
+        }
+    }
+    float sq = 0.0;
+    for (d = 0; d < HD; d++) sq += outq[d] * outq[d];
+    float r = sqrt(sq / float(HD) + p.EPS);
+    for (d = 0; d < HD; d++) {
+        float w = is_vid != 0 ? (is_q != 0 ? nqv[d] : nkv[d])
+                              : (is_q != 0 ? nqt[d] : nkt[d]);
+        outq[d] = outq[d] / r * w;
+    }
+    for (int k = 0; k < p.ROPE_ROT; k += 2) {
+        float fr = (is_vid != 0 ? vfreq[fbase + k] : tfreq[fbase + k]);
+        float c = cos(fr), s = sin(fr);
+        float a = outq[k], b = outq[k + 1];
+        outq[k]     = a * c - b * s;
+        outq[k + 1] = b * c + a * s;
+    }
+}
+
+// v token 读取（无 norm/rope）
+void get_v(int tok, int is_vid, const int base, const int QKV, out float vv[HD])
+{
+    for (int d = 0; d < HD; d++)
+        vv[d] = is_vid != 0 ? vqkv[tok * QKV + 2 * p.DIM + base + d]
+                            : tqkv[tok * QKV + 2 * p.DIM + base + d];
+}
 
 void main()
 {
-    int wi = int(gl_WorkGroupID.z);   // window
-    int h  = int(gl_WorkGroupID.y);   // head
+    int wi = int(gl_WorkGroupID.z);
+    int h  = int(gl_WorkGroupID.y);
     if (wi >= p.nwin || h >= p.HEADS) return;
 
     int DIM  = p.DIM;
@@ -59,141 +89,84 @@ void main()
     int S    = f_i + p.TXT;
     int tid  = int(gl_LocalInvocationID.x);
 
-    // ---- query 块循环（每块 128 个 query，所有线程同步参与 barrier）----
     for (int qb = 0; qb < S; qb += 128)
     {
         int a = qb + tid;
-        bool q_valid = (a < S);
+        if (a >= S) break;   // 本 workgroup 只处理 query 块首 128；S<=128 时每个线程一个 query
 
-        // ---- 加载 query：qk_norm + RoPE ----
-        bool q_is_vid = (a < f_i);
-        int  q_tok = 0, q_fbase = 0;
-        float qin[HD], qout[HD];
-        if (q_valid) {
-            if (q_is_vid) {
-                int g = int(cumf[wi] + 0.5) + a;
-                q_tok   = int(vidx[g] + 0.5);
-                q_fbase = g * p.ROPE_ROT;
-                for (int d = 0; d < HD; d++) qin[d] = vqkv[q_tok * QKV + 0 * DIM + base + d];
+        int g = 0, q_tok = 0, q_fbase = 0;
+        int q_is_vid = (a < f_i) ? 1 : 0;
+        if (q_is_vid != 0) {
+            g = int(cumf[wi] + 0.5) + a;
+            q_tok = int(vidx[g] + 0.5);
+            q_fbase = g * p.ROPE_ROT;
+        } else {
+            int ii = a - f_i;
+            q_tok = ii;
+            q_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
+        }
+        float qq[HD];
+        prep_token(q_tok, q_is_vid, q_fbase, 1, base, QKV, qq);
+
+        // 两遍 softmax：第一遍求全局 max
+        float mx = -1e30f;
+        for (int b = 0; b < S; b++) {
+            int b_is_vid = (b < f_i) ? 1 : 0;
+            int k_tok, k_fbase;
+            if (b_is_vid != 0) {
+                int g2 = int(cumf[wi] + 0.5) + b;
+                k_tok = int(vidx[g2] + 0.5);
+                k_fbase = g2 * p.ROPE_ROT;
             } else {
-                int ii = a - f_i;
-                q_tok   = ii;
-                q_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
-                for (int d = 0; d < HD; d++) qin[d] = tqkv[ii * QKV + 0 * DIM + base + d];
+                int ii = b - f_i;
+                k_tok = ii;
+                k_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
             }
-            float sq = 0.0;
-            for (int d = 0; d < HD; d++) sq += qin[d] * qin[d];
-            float rq = sqrt(sq / float(HD) + p.EPS);
-            float qnw;
-            for (int d = 0; d < HD; d++) {
-                qnw = q_is_vid ? nqv[d] : nqt[d];
-                qin[d] = qin[d] / rq * qnw;
-                qout[d] = qin[d];
-            }
-            if (q_is_vid) {
-                for (int k = 0; k < p.ROPE_ROT; k++) {
-                    float c = cos(vfreq[q_fbase + k]); float s = sin(vfreq[q_fbase + k]);
-                    float rh = (k % 2 == 0) ? -qin[k + 1] : qin[k - 1];
-                    qout[k] = qin[k] * c + rh * s;
-                }
-            } else {
-                for (int k = 0; k < p.ROPE_ROT; k++) {
-                    float c = cos(tfreq[q_fbase + k]); float s = sin(tfreq[q_fbase + k]);
-                    float rh = (k % 2 == 0) ? -qin[k + 1] : qin[k - 1];
-                    qout[k] = qin[k] * c + rh * s;
-                }
-            }
+            float kk[HD];
+            prep_token(k_tok, b_is_vid, k_fbase, 0, base, QKV, kk);
+            float dot = 0.0;
+            for (int d = 0; d < HD; d++) dot += qq[d] * kk[d];
+            dot *= p.SCALE;
+            if (dot > mx) mx = dot;
         }
 
-        // ---- online softmax：遍历 K/V 块 ----
-        float mx  = -1e30f;
-        float sum = 0.0f;
+        // 第二遍：累积 exp * v
+        float sum = 0.0;
         float outv[HD];
-        for (int d = 0; d < HD; d++) outv[d] = 0.0f;
-
-        for (int kb = 0; kb < S; kb += BK)
-        {
-            int kblk = min(BK, S - kb);
-
-            // 协作加载 K/V 块到共享内存（qk_norm+RoPE 每块只算一次，所有 query 复用）
-            for (int j = tid; j < kblk; j += 128)
-            {
-                int b = kb + j;
-                bool k_is_vid = (b < f_i);
-                int k_tok, k_fbase;
-                if (k_is_vid) {
-                    int g = int(cumf[wi] + 0.5) + b;
-                    k_tok   = int(vidx[g] + 0.5);
-                    k_fbase = g * p.ROPE_ROT;
-                } else {
-                    int ii = b - f_i;
-                    k_tok   = ii;
-                    k_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
-                }
-                float kin[HD];
-                for (int d = 0; d < HD; d++)
-                    kin[d] = k_is_vid ? vqkv[k_tok * QKV + 1 * DIM + base + d]
-                                      : tqkv[k_tok * QKV + 1 * DIM + base + d];
-                float sk = 0.0;
-                for (int d = 0; d < HD; d++) sk += kin[d] * kin[d];
-                float rk = sqrt(sk / float(HD) + p.EPS);
-                float knw;
-                for (int d = 0; d < HD; d++) {
-                    knw = k_is_vid ? nkv[d] : nkt[d];
-                    kin[d] = kin[d] / rk * knw;
-                }
-                // RoPE
-                float kout[HD];
-                for (int d = 0; d < HD; d++) kout[d] = kin[d];
-                if (k_is_vid) {
-                    for (int k = 0; k < p.ROPE_ROT; k++) {
-                        float c = cos(vfreq[k_fbase + k]); float s = sin(vfreq[k_fbase + k]);
-                        float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
-                        kout[k] = kin[k] * c + rh * s;
-                    }
-                } else {
-                    for (int k = 0; k < p.ROPE_ROT; k++) {
-                        float c = cos(tfreq[k_fbase + k]); float s = sin(tfreq[k_fbase + k]);
-                        float rh = (k % 2 == 0) ? -kin[k + 1] : kin[k - 1];
-                        kout[k] = kin[k] * c + rh * s;
-                    }
-                }
-                for (int d = 0; d < HD; d++) sK[j * HD + d] = kout[d];
-                for (int d = 0; d < HD; d++)
-                    sV[j * HD + d] = k_is_vid ? vqkv[k_tok * QKV + 2 * DIM + base + d]
-                                              : tqkv[k_tok * QKV + 2 * DIM + base + d];
+        for (int d = 0; d < HD; d++) outv[d] = 0.0;
+        for (int b = 0; b < S; b++) {
+            int b_is_vid = (b < f_i) ? 1 : 0;
+            int k_tok, k_fbase;
+            if (b_is_vid != 0) {
+                int g2 = int(cumf[wi] + 0.5) + b;
+                k_tok = int(vidx[g2] + 0.5);
+                k_fbase = g2 * p.ROPE_ROT;
+            } else {
+                int ii = b - f_i;
+                k_tok = ii;
+                k_fbase = (wi * p.TXT + ii) * p.ROPE_ROT;
             }
-            barrier();
-
-            // 每个线程遍历 K 块做 online softmax（q 与 K/V 点积 + 加权）
-            if (q_valid) {
-                for (int j = 0; j < kblk; j++) {
-                    float dot = 0.0;
-                    for (int d = 0; d < HD; d++) dot += qout[d] * sK[j * HD + d];
-                    dot *= p.SCALE;
-                    float m_new = max(mx, dot);
-                    float rescale = exp(mx - m_new);
-                    float pr = exp(dot - m_new);
-                    sum = sum * rescale + pr;
-                    for (int d = 0; d < HD; d++) outv[d] = outv[d] * rescale + pr * sV[j * HD + d];
-                    mx = m_new;
-                }
-            }
-            barrier();
+            float kk[HD];
+            prep_token(k_tok, b_is_vid, k_fbase, 0, base, QKV, kk);
+            float vv[HD];
+            get_v(k_tok, b_is_vid, base, QKV, vv);
+            float dot = 0.0;
+            for (int d = 0; d < HD; d++) dot += qq[d] * kk[d];
+            dot *= p.SCALE;
+            float pr = exp(dot - mx);
+            sum += pr;
+            for (int d = 0; d < HD; d++) outv[d] += pr * vv[d];
         }
 
-        if (q_valid) {
-            for (int d = 0; d < HD; d++) outv[d] /= sum;
-            // 写回：vid scatter 回原 token；txt 写入 toutw[wi,ii]
-            if (q_is_vid) {
-                int g = int(cumf[wi] + 0.5) + a;
-                int tok = int(vidx[g] + 0.5);
-                for (int d = 0; d < HD; d++) vattn[tok * DIM + base + d] = outv[d];
-            } else {
-                int ii = a - f_i;
-                int off = (wi * p.TXT + ii) * DIM + base;
-                for (int d = 0; d < HD; d++) toutw[off + d] = outv[d];
-            }
+        for (int d = 0; d < HD; d++) outv[d] /= sum;
+        if (q_is_vid != 0) {
+            g = int(cumf[wi] + 0.5) + a;
+            int tok = int(vidx[g] + 0.5);
+            for (int d = 0; d < HD; d++) vattn[tok * DIM + base + d] = outv[d];
+        } else {
+            int ii = a - f_i;
+            int off = (wi * p.TXT + ii) * DIM + base;
+            for (int d = 0; d < HD; d++) toutw[off + d] = outv[d];
         }
     }
 }
