@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <chrono>
 #include <algorithm>
 
 namespace fs = std::filesystem;
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "  图片:  %s <input.png> <output.png> [--resolution 1080] [--modeldir DIR] [--vaedir DIR] [--seed 42] [--no-colorfix] [--fp16|--bf16]\n", argv[0]);
         fprintf(stderr, "  帧序列:%s <frames_in_dir> <frames_out_dir> [--resolution 1080] [--modeldir DIR] [--vaedir DIR] [--seed 42] [--no-colorfix] [--fp16|--bf16]\n", argv[0]);
         fprintf(stderr, "  精度: 默认 fp32(逐位对齐)；--fp16 半精度(更快但大激活可能溢出)；--bf16 bfloat16(推荐,范围安全+TensorCore加速)\n");
+        fprintf(stderr, "  CPU:  --cpu 纯 CPU 推理（关闭 Vulkan compute，走 forward_latent 的 C++ 注意力参考 + ncnn CPU GEMM；自动 --no-graph；用于测试 ncnn CPU 路径/round 修复）\n");
         return 1;
     }
     std::string in_path = argv[1], out_path = argv[2];
@@ -60,6 +62,7 @@ int main(int argc, char** argv) {
     int seed = 42;
     bool color_fix = true;
     int precision = 0;   // 0=fp32(默认) 1=fp16 2=bf16
+    int use_cpu = 0;     // 纯 CPU 推理（关闭 Vulkan compute）
     std::string graphdir = "models/m5_graph";
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--resolution") && i + 1 < argc) resolution = atoi(argv[++i]);
@@ -69,8 +72,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-colorfix")) color_fix = false;
         else if (!strcmp(argv[i], "--fp16")) precision = 1;
         else if (!strcmp(argv[i], "--bf16")) precision = 2;
+        else if (!strcmp(argv[i], "--cpu")) use_cpu = 1;
         else if (!strcmp(argv[i], "--no-graph")) graphdir = "";
         else if (!strcmp(argv[i], "--graphdir") && i + 1 < argc) graphdir = argv[++i];
+    }
+    // CPU 模式：AWA 自定义 Layer 为 Vulkan-only，必须走 forward_latent（全 C++ + ncnn CPU GEMM），
+    // 强制 graphdir 为空（不加载合并计算图）。
+    if (use_cpu && !graphdir.empty()) {
+        fprintf(stderr, "[main] --cpu 模式：强制 --no-graph（走 CPU forward_latent 路径）\n");
+        graphdir = "";
     }
 
     // 判断输入类型：目录 = 帧序列，文件 = 单张图片
@@ -86,6 +96,7 @@ int main(int argc, char** argv) {
     cfg.seed = seed;
     cfg.color_fix = color_fix;
     cfg.precision = precision;
+    cfg.use_cpu = use_cpu;
     cfg.graphdir = graphdir;
     // 单图：graph 块逐块释放（大分辨率显存安全）；帧序列：低精度块常驻（帧间零加载加速）
     cfg.graph_resident = is_dir;
@@ -119,17 +130,20 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::vector<float> out_rgb; int outW, outH;
+        auto tf0 = std::chrono::high_resolution_clock::now();
         if (!engine.process(rgb, W, H, (int)i, out_rgb, outW, outH)) {
             fprintf(stderr, "[FAIL] 帧 %zu/%zu 推理失败\n", i + 1, frames.size());
             return 1;
         }
+        auto tf1 = std::chrono::high_resolution_clock::now();
+        double fwall = std::chrono::duration<double>(tf1 - tf0).count();
         std::string fname = fs::path(frames[i]).filename().string();
         std::string out_file = (fs::path(out_path) / fname).string();
         if (!img::save(out_file, out_rgb.data(), outW, outH)) {
             fprintf(stderr, "[FAIL] 写帧 %s\n", out_file.c_str());
             return 1;
         }
-        fprintf(stderr, "[main] 帧 %zu/%zu 完成 (%dx%d) -> %s\n", i + 1, frames.size(), outW, outH, out_file.c_str());
+        fprintf(stderr, "[main] 帧 %zu/%zu 完成 (%dx%d) wall=%.2fs -> %s\n", i + 1, frames.size(), outW, outH, fwall, out_file.c_str());
     }
     fprintf(stderr, "[main] 帧序列处理完成：%zu 帧 -> %s/\n", frames.size(), out_path.c_str());
     return 0;

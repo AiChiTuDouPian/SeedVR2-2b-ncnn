@@ -24,6 +24,8 @@ public:
         int seed = 42;              // 基准 seed；逐帧用 seed + frame_idx
         bool color_fix = true;
         int precision = 0;          // 存储精度 0=fp32(默认,逐位对齐) 1=fp16 2=bf16
+        bool use_cpu = false;       // 纯 CPU 推理（关闭 Vulkan compute，走 forward_latent 的 C++ 注意力参考 + ncnn CPU GEMM；强制 no-graph）
+        bool fp16_arith = false;    // 中间算术精度：false=fp32累加(防溢出) true=fp16累加(约2倍GEMM吞吐,大激活可能溢出Inf/NaN)
         bool graph_resident = true; // 低精度图块常驻（多帧加速）；单图/大分辨率显存紧张时 false（逐块释放）
     };
 
@@ -39,9 +41,37 @@ public:
 
     bool ready() const { return ready_; }
 
+    // ---- 性能 profiler：benchmark 读取各阶段耗时 ----
+    struct StageProfile {
+        std::string name;       // 阶段名
+        std::string device;     // 计算位置: "CPU" / "GPU(Vulkan)" / "CPU+GPU"
+        double ms = 0.0;        // 最近一次耗时（毫秒）
+    };
+    struct Profiler {
+        std::vector<StageProfile> stages;
+        double total_ms = 0.0;
+        void add(const std::string& name, const std::string& device, double ms) {
+            stages.push_back({name, device, ms});
+            total_ms += ms;
+        }
+        void reset() { stages.clear(); total_ms = 0.0; }
+    };
+    const Profiler& profiler() const { return prof_; }
+
+    // benchmark 用：暴露 DiT 当前的模型加载方式
+    struct LoadModeInfo {
+        bool graph_ready = false;   // 分块图已加载 (dit_block_*)
+        bool single_net = false;    // 单 Net 全部加载 (dit_graph.*)
+        int  num_blocks = 0;        // 分块图块数
+        int  block_chunk = 0;       // 每块层数
+        bool graph_resident = false;// 图块是否常驻（帧间零加载）
+    };
+    LoadModeInfo load_mode_info() const;
+
 private:
     Config cfg_;
     std::vector<float> txt_;          // 文本条件 (TXT, 5120) 展开
     std::unique_ptr<DitVk> dit_;      // DiT 常驻（唯一持有 GPU 实例，析构时 destroy）
     bool ready_ = false;
+    Profiler prof_;
 };

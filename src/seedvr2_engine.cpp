@@ -8,7 +8,11 @@
 #include "image_io.h"
 #include "rng.h"
 #include "color_fix.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <cmath>
@@ -40,20 +44,28 @@ bool SeedVR2Engine::init(const Config& cfg) {
 
     // ---- DiT 引擎（常驻，跨帧复用）----
     dit_ = std::make_unique<DitVk>();
-    if (!dit_->init(cfg_.modeldir, false, cfg_.precision)) return false;
+    if (!dit_->init(cfg_.modeldir, cfg_.fp16_arith, cfg_.precision, cfg_.use_cpu)) return false;
     dit_->set_graph_persistent(cfg_.graph_resident);   // 单图/显存紧张逐块释放；多帧常驻加速
 
     // ---- 阶段3：GPU 合并图 ----
     // RTX 5060 Ti 16GB 无法承载 32 层单 Net 的约 10GB 权重 + staging + 激活 + workspace，
     // 且驱动 OOM 可在 ncnn 返回失败前直接终止进程。因此默认走可用的分块图；
     // 仅显式 SEEDVR_SINGLE_NET=1 时尝试单 Net（用于更大显存卡或实验）。
-    if (!cfg_.graphdir.empty()) {
+    // CPU 模式：AWA 自定义 Layer 为 Vulkan-only，无法走合并图，强制 graphdir 为空 -> 走 forward_latent（全 C++ + ncnn CPU GEMM）。
+    std::string gdir = cfg_.use_cpu ? std::string("") : cfg_.graphdir;
+    if (!gdir.empty()) {
         bool try_single = getenv("SEEDVR_SINGLE_NET") && atoi(getenv("SEEDVR_SINGLE_NET")) != 0;
-        if (try_single && dit_->load_single(cfg_.graphdir)) {
+        if (try_single && dit_->load_single(gdir)) {
             fprintf(stderr, "[engine] 单 Net 加载成功\n");
         } else {
             if (try_single) fprintf(stderr, "[engine] 单 Net 加载失败，回退分块图\n");
-            if (!dit_->load_graph(cfg_.graphdir, (cfg_.precision != 0) ? 1 : 2))
+            // 块图 chunk（每块层数）：默认 bf16/fp16=1、fp32=2；可用 SEEDVR_GRAPH_CHUNK 覆盖
+            // （配合 SEEDVR_BLOCK_PREFIX 使用，用于验证大 chunk 是否能摊薄 per-Net 固定开销）
+            int gchunk = (cfg_.precision != 0) ? 1 : 2;
+            if (const char* gc = getenv("SEEDVR_GRAPH_CHUNK")) gchunk = atoi(gc);
+            if (gchunk > 0) fprintf(stderr, "[engine] 图 chunk=%d (prefix=%s)\n", gchunk,
+                                    getenv("SEEDVR_BLOCK_PREFIX") ? getenv("SEEDVR_BLOCK_PREFIX") : "(default)");
+            if (!dit_->load_graph(gdir, gchunk))
                 fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
         }
     }
@@ -65,6 +77,7 @@ bool SeedVR2Engine::init(const Config& cfg) {
 bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int frame_idx,
                             std::vector<float>& out_rgb, int& outW, int& outH) {
     if (!ready_) return false;
+    prof_.reset();
     int seed = cfg_.seed + frame_idx;
     auto tp0 = std::chrono::high_resolution_clock::now();
 
@@ -86,6 +99,8 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
 
     int H8 = padH / 8, W8 = padW / 8;
     auto tp1 = std::chrono::high_resolution_clock::now();
+    prof_.add("1. 预处理 (resize/pad/normalize)", "CPU",
+              std::chrono::duration<double>(tp1 - tp0).count() * 1000.0);
     fprintf(stderr, "[perf] 预处理(resize/pad/norm) = %.3f s\n",
             std::chrono::duration<double>(tp1 - tp0).count());
 
@@ -94,29 +109,38 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
     {
         VaeVk vae;
         // VAE 强制 fp32（低精度 bf16 模式下 VAE 析构会 pool allocator 崩；fp32 VAE 1080p 已验证稳定）
-        if (!vae.init(cfg_.vaedir, H8, W8, 0)) return false;
+        if (!vae.init(cfg_.vaedir, H8, W8, 0, cfg_.use_cpu)) return false;
         ncnn::Mat img_mat(padW, padH, 3);
         memcpy(img_mat.data, x.data(), x.size() * 4);
         ncnn::Mat mean, logvar;
         if (!vae.encode(img_mat, mean, logvar)) return false;
         // 采样 latent = mean + exp(0.5*logvar) * randn（seed+1000000，批量 fill 对齐 PyTorch）
-        rng::Randn rngv(seed + 1000000);
+        // [RNG 对齐] 官方 VAE 重参数化 eps 也是 CUDA(Philox)：generation_phases.py set_seed(seed+1000000)
+        //   后 VAE .latent 采样 randn_like → 必须用 PhiloxRandn(seed+1000000)，不能用 CPU mt19937！
+        //   （mt19937 版本 cond 与官方 cos≈0.9993、残差 1~5% → 细粒度纹理错乱；对齐后应 ≈1）
+        rng::PhiloxRandn rngv(seed + 1000000);
         std::vector<float> eps(latent.size());
         rngv.fill(eps.data(), eps.size());
         const float* mp = (const float*)mean.data;
         const float* lp = (const float*)logvar.data;
-        for (size_t i = 0; i < latent.size(); i++) {
+        const size_t n = latent.size();
+        #pragma omp parallel for schedule(static)
+        for (long long i = 0; i < (long long)n; i++) {
             float std = std::exp(0.5f * lp[i]);
-            latent[i] = mp[i] + std * eps[i];
+            latent[(size_t)i] = mp[i] + std * eps[i];
         }
     }
     auto tp2 = std::chrono::high_resolution_clock::now();
+    prof_.add("2. VAE encode (子图GPU / 采样CPU)", "GPU(Vulkan)+CPU",
+              std::chrono::duration<double>(tp2 - tp1).count() * 1000.0);
     fprintf(stderr, "[perf] VAE encode = %.3f s\n",
             std::chrono::duration<double>(tp2 - tp1).count());
 
-    // ---- 3. 构造 vid_grid (H8,W8,33) channel-last ----
+    // ---- 3. 构造 vid_grid (H8,W8,33) channel-last HWC访问更快----
     std::vector<float> noise((size_t)16 * H8 * W8);
-    { rng::Randn rngn(seed); rngn.fill(noise.data(), noise.size()); }
+    // [RNG 对齐] 官方 DiT 噪声 = torch.randn(CUDA, seed) = Philox4x32-10 + curand_normal4（非 mt19937）
+    //   → PhiloxRandn 复刻 CUDA normal_kernel 布局，噪声与官方 cos≈0.999999999+（x0 从 0.379 → 0.99995）
+    { rng::PhiloxRandn rngn(seed); rngn.fill(noise.data(), noise.size()); }
     std::vector<float> vid_grid((size_t)H8 * W8 * 33);
     for (int h = 0; h < H8; h++)
         for (int w = 0; w < W8; w++) {
@@ -127,12 +151,55 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
             }
             vp[32] = 1.0f;  // mask
         }
+    // SEEDVR_DUMP_VIDGRID=1：dump DiT 输入 vid_grid（H8*W8*33 channel-last）到 vid_grid.bin，
+    // 用于和 PyTorch 的 DiT 输入对比，确认输入是否一致。
+    if (getenv("SEEDVR_DUMP_VIDGRID")) {
+        FILE* fp = fopen("vid_grid.bin", "wb");
+        if (fp) {
+            size_t n = (size_t)H8 * W8 * 33;
+            fwrite(&n, sizeof(size_t), 1, fp);
+            fwrite(&H8, sizeof(int), 1, fp);
+            fwrite(&W8, sizeof(int), 1, fp);
+            fwrite(vid_grid.data(), sizeof(float), n, fp);
+            fclose(fp);
+            fprintf(stderr, "[dump] vid_grid -> vid_grid.bin (%d x %d x 33 = %zu floats)\n", H8, W8, n);
+        }
+    }
 
+    // [DIAG] SEEDVR_LOAD_X0=<path>：跳过噪声/DiT，直接载入外部 x0 作为 VAE decode 输入
+    //   （channel-first [16,H8,W8] 原始 float；容忍 0/16/20B 头）→ 隔离 decode 的模糊/纹理贡献。
+    std::vector<float> sr;      // DiT 输出 v（channel-last）；LOAD_X0 时未用
+    std::vector<float> z_dec;   // VAE decode 输入（channel-first）
+    if (const char* lx = getenv("SEEDVR_LOAD_X0")) {
+        size_t expect = (size_t)16 * H8 * W8;
+        z_dec.resize(expect);
+        FILE* fp = fopen(lx, "rb");
+        if (!fp) { fprintf(stderr, "[engine] SEEDVR_LOAD_X0 无法打开 %s\n", lx); return false; }
+        fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+        long full = (long)(expect * 4);
+        if (sz == full) { /* raw */ }
+        else if (sz == full + 16) { fseek(fp, 16, SEEK_SET); }
+        else if (sz == full + 20) { fseek(fp, 20, SEEK_SET); }
+        else {
+            fprintf(stderr, "[engine] SEEDVR_LOAD_X0 大小不符: %ld (期望 %ld 或 +16/+20 头)\n", sz, full);
+            fclose(fp); return false;
+        }
+        size_t rd = fread(z_dec.data(), 4, expect, fp); fclose(fp);
+        if (rd != expect) { fprintf(stderr, "[engine] SEEDVR_LOAD_X0 读入不足 %zu/%zu\n", rd, expect); return false; }
+        fprintf(stderr, "[engine] 载入外部 x0 (%s) [16x%d x %d], 跳过噪声+DiT\n", lx, H8, W8);
+    }
+    bool use_ext_x0 = (getenv("SEEDVR_LOAD_X0") != nullptr);
+    std::chrono::high_resolution_clock::time_point tp3, tp3b;
+
+    if (!use_ext_x0) {
     // ---- 4. DiT（常驻引擎：graph 整图路径 或 分块推理路径）----
-    std::vector<float> sr;
     {
         int token_h = H8 / 2, token_w = W8 / 2;
+        // SEEDVR_FULLWIN=1：退化 AWA 为全窗口注意力（nwin=1，每窗覆盖整个 latent），
+        // 用于定位"格子内部细节错/网格"是否来自窗口划分；默认 0 用多窗口 {4,3,3}
         int num_windows[3] = {4, 3, 3};
+        const char* fw = getenv("SEEDVR_FULLWIN");
+        if (fw && atoi(fw) != 0) num_windows[0] = num_windows[1] = num_windows[2] = 1;
         Win wns = awa::make_win(1, token_h, token_w, num_windows, TXT_LEN, false);
         Win wsh = awa::make_win(1, token_h, token_w, num_windows, TXT_LEN, true);
         dit_->set_windows(wns, wsh);
@@ -168,20 +235,52 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
                     ok = false; break;
                 }
                 if (!sro.empty()) sr = DitVk::unpatchify_latent(sro, 1, H8, W8);
-                else { cur_vid = vout; cur_txt = tout; }
+                else {
+                    cur_vid = vout; cur_txt = tout;
+                    // [DIAG] SEEDVR_DUMP_CHUNKOUT=1：dump chunk 边界 vid 隐藏态 (Lv,DIM) 残差流，
+                    //   与官方 nadit 逐 block dump(pt_block{N}_vid.bin) 对拍 → 漂移曲线/结构性 bug 定位
+                    if (getenv("SEEDVR_DUMP_CHUNKOUT")) {
+                        char fn[64]; snprintf(fn, sizeof(fn), "chunkout_%d.bin", l1);
+                        FILE* fp = fopen(fn, "wb");
+                        if (fp) {
+                            fwrite(&l1, sizeof(int), 1, fp);          // 已处理层数(8/16/24)
+                            fwrite(&Lv, sizeof(int), 1, fp);
+                            fwrite(vout.data(), sizeof(float), vout.size(), fp);
+                            fclose(fp);
+                            fprintf(stderr, "[dump] chunk %d vid hidden -> %s  (%d x %zu = %zu floats)\n",
+                                    l1, fn, Lv, vout.size() / (size_t)Lv, vout.size());
+                        }
+                    }
+                }
                 done = l1;
                 if (done < NUM_LAYERS) dit_->reset_vulkan_device();
             }
             if (!ok) { fprintf(stderr, "[engine] DiT 推理失败\n"); return false; }
         }
         if (sr.empty()) { fprintf(stderr, "[engine] 未产出 sr\n"); return false; }
+        // SEEDVR_DUMP_SR=1：dump DiT 输出 latent（unpatchify 后，channel-last 16 通道）到 latent_sr.bin，
+        // 用于和 PyTorch 的 DiT 输出逐值对比，定位"格子内部细节错"根因。
+        if (getenv("SEEDVR_DUMP_SR")) {
+            FILE* fp = fopen("latent_sr.bin", "wb");
+            if (fp) {
+                size_t n = (size_t)H8 * W8 * 16;
+                fwrite(&n, sizeof(size_t), 1, fp);
+                fwrite(&H8, sizeof(int), 1, fp);
+                fwrite(&W8, sizeof(int), 1, fp);
+                fwrite(sr.data(), sizeof(float), n, fp);
+                fclose(fp);
+                fprintf(stderr, "[dump] sr latent -> latent_sr.bin  (%d x %d x 16 = %zu floats)\n", H8, W8, n);
+            }
+        }
     }
-    auto tp3 = std::chrono::high_resolution_clock::now();
+    tp3 = std::chrono::high_resolution_clock::now();
+    prof_.add("3. DiT (32层 NaDiT / AWA)", "GPU(Vulkan)",
+              std::chrono::duration<double>(tp3 - tp2).count() * 1000.0);
     fprintf(stderr, "[perf] DiT(32层) = %.3f s\n",
             std::chrono::duration<double>(tp3 - tp2).count());
 
     // ---- 5. upscaled = noise - sr；转 channel-first 再 /0.9152 ----
-    std::vector<float> z_dec((size_t)16 * H8 * W8);
+    z_dec.resize((size_t)16 * H8 * W8);
     for (int h = 0; h < H8; h++)
         for (int w = 0; w < W8; w++)
             for (int c = 0; c < 16; c++) {
@@ -189,15 +288,20 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
                 float s = sr[((size_t)h * W8 + w) * 16 + c];   // sr channel-last
                 z_dec[((size_t)c * H8 + h) * W8 + w] = (n - s) / SCALING_FACTOR;
             }
+    }   // end if(!use_ext_x0)：噪声+DiT 计算 z_dec
 
     // ---- 6. VAE decode（独立作用域，decode 后立即拷贝输出再释放）----
-    // 低精度模式：DiT 权重常驻（~5.5GB bf16）会挤爆 VAE decode 显存 -> decode 前主动释放 graph
-    if (dit_->graph_ready()) dit_->release_graph();
+    // 常驻模式（graph_resident=true，默认）：分块图跨帧复用，VAE 前不释放，避免每帧退化为慢速旧路径。
+    // 仅显存紧张时（graph_resident=false）在 VAE 前主动释放 graph（DiT 权重 ~5.5GB 会挤爆 VAE decode 显存）。
+    tp3b = std::chrono::high_resolution_clock::now();
+    prof_.add("4. upscaled (z_dec = (noise-sr)/0.9152)", "CPU",
+              std::chrono::duration<double>(tp3b - tp3).count() * 1000.0);
+    if (dit_->graph_ready() && !cfg_.graph_resident) dit_->release_graph();
     std::vector<float> y_data((size_t)3 * padH * padW);
     {
         VaeVk vae;
         // VAE 强制 fp32（低精度 bf16 模式下 VAE 析构会 pool allocator 崩；fp32 VAE 1080p 已验证稳定）
-        if (!vae.init(cfg_.vaedir, H8, W8, 0)) return false;
+        if (!vae.init(cfg_.vaedir, H8, W8, 0, cfg_.use_cpu)) return false;
         ncnn::Mat z_mat(W8, H8, 16);
         memcpy(z_mat.data, z_dec.data(), z_dec.size() * 4);
         ncnn::Mat y;
@@ -205,13 +309,19 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
         memcpy(y_data.data(), y.data, y_data.size() * 4);
     }
     auto tp4 = std::chrono::high_resolution_clock::now();
+    prof_.add("5. VAE decode (子图GPU)", "GPU(Vulkan)",
+              std::chrono::duration<double>(tp4 - tp3b).count() * 1000.0);
     fprintf(stderr, "[perf] VAE decode = %.3f s\n",
             std::chrono::duration<double>(tp4 - tp3).count());
 
     // ---- 7. LAB 色彩校正（content=超分结果 style=原始LR）----
+    auto tp4b = std::chrono::high_resolution_clock::now();
     if (cfg_.color_fix) {
         colorfix::lab_color_transfer(y_data.data(), x.data(), padH, padW, y_data.data(), 0.8f);
     }
+    auto tp4c = std::chrono::high_resolution_clock::now();
+    prof_.add("6. LAB色彩校正", cfg_.color_fix ? "CPU" : "CPU(跳过)",
+              std::chrono::duration<double>(tp4c - tp4b).count() * 1000.0);
 
     // ---- 8. 反 normalize + 裁剪 pad ----
     std::vector<float> out_local((size_t)rH * rW * 3);
@@ -223,7 +333,21 @@ bool SeedVR2Engine::process(const std::vector<float>& rgb, int W, int H, int fra
                 if (v < 0) v = 0; if (v > 1) v = 1;
                 out_local[((size_t)h * rW + w) * 3 + c] = v;
             }
+    auto tp5 = std::chrono::high_resolution_clock::now();
+    prof_.add("7. 反归一化 + 裁剪", "CPU",
+              std::chrono::duration<double>(tp5 - tp4c).count() * 1000.0);
     out_rgb = std::move(out_local);
     outW = rW; outH = rH;
     return true;
+}
+
+SeedVR2Engine::LoadModeInfo SeedVR2Engine::load_mode_info() const {
+    LoadModeInfo info;
+    if (!dit_) return info;
+    info.single_net = dit_->is_single_net();
+    info.graph_ready = dit_->graph_ready();
+    info.num_blocks = dit_->get_num_blocks();
+    info.block_chunk = dit_->get_block_chunk();
+    info.graph_resident = dit_->is_graph_resident();
+    return info;
 }
