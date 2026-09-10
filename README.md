@@ -33,21 +33,49 @@ cmake --build build-cmake -j
 
 - `models/m5/`      —— DiT 权重（含 `awa.spv`）
 - `models/m6_vae/`  —— VAE 权重
-- `models/m5_graph/`—— **合并计算图权重块**：由 `export/export_dit_graph.py` 从 `models/m5/` 重新生成（fp32 16 块 + bf16 32 块 + f16 32 块，53G+），不入库。
+- `models/m5_graph/`—— **合并计算图权重块**：由 `export/export_dit_graph.py` 从 `models/m5/` 重新生成，**不入库**
+  （该目录约 95 GB：每套块图约 9.7 GB × 5 套，另有单 Net 整图与历史备份）。命名见下方「生成合并计算图块」。
 
 请用 `export/` 下的导出脚本从官方 SeedVR2 权重重新导出，或自行放置权重。
 
 生成合并计算图块：
 
 ```bash
-# 导出 fp32 块（CH=2，16 块，覆盖 32 层）
+# --- 命名约定：块 b（chunk=C）覆盖层 [b*C, (b+1)*C)，文件里不含层号，靠 chunk 参数对齐 ---
+# fp32 块（chunk=2，16 块，覆盖 32 层）
 python export/export_dit_graph.py models/m5 32 0 2   dit_block_0
 python export/export_dit_graph.py models/m5 32 2 4   dit_block_1
 # ... 每 2 层一块，直到 32 层（共 16 块）
-# bf16 块（CH=1，32 块）：prefix 用 dit_block_bf16_
+
+# bf16 块（chunk=1，32 块）
 python export/export_dit_graph.py models/m5 32 0 1   dit_block_bf16_0
 # ... 每层一块，直到 32 层（共 32 块）
+
+# bf16 块（chunk=2，16 块）—— 引擎默认路径，比 chunk=1 快约 9%（见性能报告 §3）
+python export/export_dit_graph.py models/m5 32 0 2   dit_block_bf16_c2_0
+python export/export_dit_graph.py models/m5 32 2 4   dit_block_bf16_c2_1
+# ... 每 2 层一块，直到 32 层（共 16 块）
+
+# bf16 块（chunk=4，8 块）—— 实测无进一步收益，仅作对照
+python export/export_dit_graph.py models/m5 32 0 4   dit_block_bf16_c4_0
+# ... 每 4 层一块，直到 32 层（共 8 块）
 ```
+
+命名规则（`src/dit_graph.cpp` 的 `block_prefix()`）：
+
+| 精度 | chunk | 前缀 | 块数 |
+|---|---:|---|---:|
+| fp32 | 2 | `dit_block_` | 16 |
+| fp16 | 1 | `dit_block_f16_` | 32 |
+| bf16 | 1 | `dit_block_bf16_` | 32 |
+| bf16 | 2 | `dit_block_bf16_c2_` | 16 |
+| bf16 | 4 | `dit_block_bf16_c4_` | 8 |
+
+> 低精度 chunk>1 的变体追加 `c{N}` 标记，与 chunk=1 的旧文件并存、互不覆盖。
+> fp32 不加标记——它的历史默认就是 chunk=2。
+> 环境变量 `SEEDVR_BLOCK_PREFIX` 可整体覆盖前缀（诊断用），`SEEDVR_GRAPH_CHUNK` 可覆盖 chunk；
+> 若低精度缺 `c{N}` 块图，引擎会自动回退到 chunk=1 的 32 块图。
+> 只导出 bf16 一套（默认路径）约占 10 GB。
 
 ## 用法
 
@@ -131,11 +159,28 @@ CPU 与 GPU 在 360p fp32 下几乎逐位一致（cos 1.000000 / PSNR 80.52 dB�
 - **DiT 占 wall 的 85%~95%**，是唯一值得优化的部分。
 - 低精度 graph 比 fp32 快 **1.7~1.8×**。
 - fp32 `forward_latent` 的 DiT 构成（1080p）：GEMM 52~58% / AWA 自定义算子 13~15% / CPU 循环 28~35%。
-- **当前最大瓶颈：低精度 graph 的块间搬运**（32 块，每块 download+upload 约 2.3 s，
-  合计约 74 s ≈ DiT 的 70%，32 块共约 3.5 GB 过 PCIe）。
-  **把 chunk 1→2/4（32 块→16/8 块）预计可让 DiT 再降 35%~45%**，是首选优化。
+- **块图 chunk（每块层数）已默认 2**，实测（bf16，`diag/chunk_test/`）：
+
+  | 分辨率 | chunk=1（32 块） | chunk=2（16 块） | chunk=4（8 块） |
+  |---|---:|---:|---:|
+  | 360p | 38.98 s | 39.05 s | — |
+  | 720p | 60.62 s | **59.50 s** | — |
+  | 1080p | 105.53 s | **96.21 s（-8.9%）** | 96.57 s（无进一步收益） |
+
+  三者输出与 chunk=1 **逐位一致**（cos 1.000000 / PSNR inf）。
+  收益来自**减少每块固定开销**（Net/Extractor 创建、窗口几何注入、块边界 I/O），
+  其中块边界 I/O ∝ latent Lv，故收益随分辨率增长（360p ≈ 0% → 1080p -8.9%）。
+  早前「块间搬运占 DiT 70%、chunk 可降 35%~45%」的估计已**被实测推翻**——非 extract 段的大头其实是
+  权重加载（与 chunk 无关）。详见性能报告 §3。
+- **当前最大单项：每块的权重加载**（1080p `load_model` 1368 ms/块 + 读盘 396 ms/块，
+  16 块合计 ≈ 28 s ≈ DiT 的 **29%**）。
+  试过「把权重 bin 改存 fp32，绕开 ncnn `Mat::from_float16()` 的单线程 fp16→fp32 转换」——
+  实测**否决**：转换只值 520 ms/块，而 bin 体积翻倍让读盘多花 637 ms/块，DiT 反而 **+1.2%**。
+  要省只能靠「少加载几次」（帧序列常驻）。详见性能报告 §3.1。
 - 帧序列模式下 DiT 常驻：720p bf16 首帧 65.7 s → **稳态 33.5 s/帧**（省约 47%）。
   16 GB 显存下驻留仅 720p bf16 可行（低精度块权重常驻 10.18 GB）。
+- **逐层精度**：bf16 在 30 层后 cos ≥ 0.9993（几乎无损）；fp16 第 12 层跌破 0.996、第 30 层仅 0.90~0.93
+  （动态范围不足）。逐层表见 [`bench/LAYER_COMPARISON.md`](bench/LAYER_COMPARISON.md)。
 
 ## 已知限制
 
@@ -161,10 +206,12 @@ CPU 与 GPU 在 360p fp32 下几乎逐位一致（cos 1.000000 / PSNR 80.52 dB�
 - `tools/` —— 调试 / 对拍辅助脚本（与官方 PyTorch 参考实现比对）：
   - `pt_reference.py` —— 生成官方 PyTorch 参考图（固定对拍口径）
   - `img_metrics.py` —— 两张 PNG 的 cos / PSNR / mean|d| / max|d| / SSIM
+  - `layer_cmp.py` —— **逐层（逐块）数值对拍**：读 `SEEDVR_DUMP_BLOCKOUT=1` 的 dump，按层号对齐，输出逐层 cos / max|d| / mean|d|
   - `benchmark.cpp` —— 逐阶段计时 benchmark（`seedvr2_bench`）
 - `bench/` —— **性能与精度基准**（脚本 + 报告 + PyTorch 基准图）：
   - `run_pt_compare.sh` —— ncnn × {fp32,fp16,bf16} × {360,720,1080} vs 官方 PyTorch 矩阵
   - `run_perf_cpu_gpu.sh` —— fp16/bf16/fp32 × GPU/CPU @1080p 性能批测
   - `PT_COMPARISON.md` / `PERFORMANCE_ANALYSIS.md` —— 对比与性能分析报告
+  - `LAYER_COMPARISON.md` —— **逐层精度报告**（bf16/fp16 vs fp32 的误差累积曲线）
 - `docs/` —— 技术文档（`GPU加速与自定义算子技术文档.md`）；`docs/archive/` 为历史快照。
 - `third_party/` —— stb_image 头文件（图像读写）。

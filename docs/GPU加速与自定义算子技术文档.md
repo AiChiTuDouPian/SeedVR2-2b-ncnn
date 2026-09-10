@@ -96,9 +96,14 @@
 |---|---|---|---|---|
 | fp32 | `dit_block_` | 2（chunk=2） | 16 | 块权重 fp32；1080p 整块执行 16GB 显存吃紧（已 OOM），主要服务 360p/对拍 |
 | fp16 | `dit_block_f16_` | 1（chunk=1） | 32 | 块权重低 16 位 |
-| bf16 | `dit_block_bf16_` | 1（chunk=1） | 32 | 块权重低 16 位；**生产推荐** |
+| bf16 | `dit_block_bf16_` | 1（chunk=1） | 32 | 块权重低 16 位 |
+| bf16 | `dit_block_bf16_c2_` | 2（chunk=2） | 16 | **引擎默认路径**；1080p DiT 比 chunk=1 快 8.9%，输出逐位一致 |
+| bf16 | `dit_block_bf16_c4_` | 4（chunk=4） | 8 | 仅作对照：实测无进一步收益（大 Net 开销抵消块数减少） |
 
-块文件位置：`models/m5_graph/`（≈53GB 全套，不入库，由 `export/export_dit_graph.py` 生成）。
+块文件位置：`models/m5_graph/`（该目录约 95GB，每套块图约 9.7GB；不入库，由 `export/export_dit_graph.py` 生成）。
+chunk 由 `src/dit_graph.cpp` 的 `block_prefix(precision, chunk)` 决定：低精度 chunk>1 追加 `c{N}` 标记，
+与 chunk=1 的旧文件并存；`SEEDVR_GRAPH_CHUNK` / `SEEDVR_BLOCK_PREFIX` 可覆盖（诊断用）。
+chunk 收益与开销构成见 `bench/PERFORMANCE_ANALYSIS.md` §3。
 
 块执行要点：
 
