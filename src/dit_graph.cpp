@@ -21,14 +21,22 @@
 static const int DIM = 2560;
 static const int NUM_LAYERS = 32, MM_LAYERS = 10;
 
-// 块图前缀：默认按 precision_ 选择（fp32/fp16/bf16 三套块图）；
-// 可用 SEEDVR_BLOCK_PREFIX 环境变量覆盖，用于测试不同 chunk 导出的块图
-// （如 dit_block_bf16_c8_* = 8 层/块，验证「块数越少 per-Net 固定开销越低」）。
-static const char* block_prefix(int precision)
+// 块图前缀。命名约定（历史上形成，为复用已导出的块图而保留，每套约 9.7GB）：
+//   fp32 : dit_block_{b}          —— chunk=2（16 块，块 b 覆盖层 [2b, 2b+2)）
+//   f16  : dit_block_f16_{b}      —— chunk=1（32 块）
+//   bf16 : dit_block_bf16_{b}     —— chunk=1（32 块）
+// chunk>1 的低精度变体追加 c{N} 标记，与 chunk=1 的文件并存、互不覆盖：
+//   dit_block_bf16_c2_{b}（16 块）/ dit_block_bf16_c4_{b}（8 块）
+// fp32 不加标记：它的历史默认就是 chunk=2，改了要重导；低精度历史上是 chunk=1，
+// 加 c{N} 才能与旧文件区分。SEEDVR_BLOCK_PREFIX 可整体覆盖（诊断用）。
+static std::string block_prefix(int precision, int chunk)
 {
     const char* ov = getenv("SEEDVR_BLOCK_PREFIX");
     if (ov && ov[0]) return ov;
-    return (precision == 0) ? "dit_block_" : (precision == 1 ? "dit_block_f16_" : "dit_block_bf16_");
+    if (precision == 0) return "dit_block_";   // fp32 只有 chunk=2 一套
+    std::string base = (precision == 1) ? "dit_block_f16_" : "dit_block_bf16_";
+    if (chunk > 1) base += "c" + std::to_string(chunk) + "_";
+    return base;
 }
 
 static std::vector<unsigned char> graph_read_bin(const std::string& path)
@@ -47,15 +55,18 @@ static std::vector<unsigned char> graph_read_bin(const std::string& path)
 bool DitVk::graph_load_block(int b)
 {
     if (gblocks_[b]) return true;
-    const char* prefix = block_prefix(precision_);
+    const std::string& prefix = gblock_prefix_;
     char pname[64], bname[64];
-    snprintf(pname, sizeof(pname), "%s%d.param", prefix, b);
-    snprintf(bname, sizeof(bname), "%s%d.bin", prefix, b);
+    snprintf(pname, sizeof(pname), "%s%d.param", prefix.c_str(), b);
+    snprintf(bname, sizeof(bname), "%s%d.bin", prefix.c_str(), b);
     std::string pfull = graph_dir_ + pname, bfull = graph_dir_ + bname;
     std::ifstream fp(pfull);
     if (!fp) { fprintf(stderr, "[graph] 缺 %s\n", pfull.c_str()); return false; }
+    // 分段计时（SEEDVR_DIAG_LOAD=1）：定位「每块固定开销」到底花在哪
+    auto tl0 = std::chrono::high_resolution_clock::now();
     std::vector<unsigned char> bbin = graph_read_bin(bfull);
     if (bbin.empty()) { fprintf(stderr, "[graph] 缺 %s\n", bfull.c_str()); return false; }
+    auto tl1 = std::chrono::high_resolution_clock::now();
     std::unique_ptr<ncnn::Net> bn(new ncnn::Net);
     bn->set_vulkan_device(vkdev);
     bn->opt.use_vulkan_compute = true;
@@ -85,7 +96,17 @@ bool DitVk::graph_load_block(int b)
     bn->register_custom_layer("AdaCompose", AdaComposeLayer::creator);
     bn->register_custom_layer("Bf16Cast", Bf16CastLayer::creator);
     if (bn->load_param(pfull.c_str()) != 0) { fprintf(stderr, "[graph] block %d load_param FAIL\n", b); return false; }
+    auto tl2 = std::chrono::high_resolution_clock::now();
     if (bn->load_model(bbin.data()) < 0) { fprintf(stderr, "[graph] block %d load_model FAIL\n", b); return false; }
+    auto tl3 = std::chrono::high_resolution_clock::now();
+    if (getenv("SEEDVR_DIAG_LOAD")) {
+        auto ms = [](auto a, auto b2) {
+            return std::chrono::duration<double, std::milli>(b2 - a).count();
+        };
+        fprintf(stderr, "[loadblk] %-18s bin=%7.1fMB 读盘=%6.1fms Net建+param=%6.1fms load_model=%6.1fms\n",
+                (prefix + std::to_string(b)).c_str(), bbin.size() / 1048576.0,
+                ms(tl0, tl1), ms(tl1, tl2), ms(tl2, tl3));
+    }
     gblocks_[b] = std::move(bn);
     return true;
 }
@@ -145,17 +166,18 @@ bool DitVk::load_graph(const std::string& graph_dir, int chunk)
     gblocks_.clear();
     gblocks_.resize(gblock_count_);
     // 只校验文件存在（块 Net 按需加载+用完释放：8 块 fp32 权重 20GB 超 16GB 显存，不能全常驻）
-    const char* prefix = block_prefix(precision_);
+    gblock_prefix_ = block_prefix(precision_, chunk);
     for (int b = 0; b < gblock_count_; b++) {
         char pname[64];
-        snprintf(pname, sizeof(pname), "%s%d.param", prefix, b);
+        snprintf(pname, sizeof(pname), "%s%d.param", gblock_prefix_.c_str(), b);
         std::ifstream fp(graph_dir_ + pname);
-        if (!fp) { fprintf(stderr, "[graph] 缺 %s（需先跑 export_dit_graph.py 生成块图；fp16 需 f16 变体）\n", (graph_dir_ + pname).c_str()); return false; }
+        if (!fp) { fprintf(stderr, "[graph] 缺 %s（需先跑 export_dit_graph.py 生成块图；低精度 chunk>1 需 c{N} 变体）\n", (graph_dir_ + pname).c_str()); return false; }
     }
     graph_loaded_ = true;
     gblock_run_ = gblock_count_;   // 默认跑全部块；set_run_blocks(n) 可限制只跑前 n 块（用于小单 Net 同层对比）
     win_injected_ = false;
-    fprintf(stderr, "[graph] ready (%d blocks, chunk=%d; 块 Net 按需加载+用完释放)\n", gblock_count_, chunk);
+    fprintf(stderr, "[graph] ready (%d blocks, chunk=%d, prefix=%s)\n",
+            gblock_count_, chunk, gblock_prefix_.c_str());
     return true;
 }
 

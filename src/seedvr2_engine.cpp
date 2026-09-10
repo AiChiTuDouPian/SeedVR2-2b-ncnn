@@ -46,6 +46,9 @@ bool SeedVR2Engine::init(const Config& cfg) {
     dit_ = std::make_unique<DitVk>();
     if (!dit_->init(cfg_.modeldir, cfg_.fp16_arith, cfg_.precision, cfg_.use_cpu)) return false;
     dit_->set_graph_persistent(cfg_.graph_resident);   // 单图/显存紧张逐块释放；多帧常驻加速
+    // SEEDVR_GRAPH_RESIDENT=1：强制块常驻（实验用）。注意单图模式下每块本来就只加载一次，
+    // 常驻并不省时间、只多占显存；它的价值在帧序列（跨帧零重载）。此开关用于压测显存边界。
+    if (const char* gr = getenv("SEEDVR_GRAPH_RESIDENT")) dit_->set_graph_persistent(atoi(gr) != 0);
 
     // ---- 阶段3：GPU 合并图 ----
     // RTX 5060 Ti 16GB 无法承载 32 层单 Net 的约 10GB 权重 + staging + 激活 + workspace，
@@ -59,14 +62,26 @@ bool SeedVR2Engine::init(const Config& cfg) {
             fprintf(stderr, "[engine] 单 Net 加载成功\n");
         } else {
             if (try_single) fprintf(stderr, "[engine] 单 Net 加载失败，回退分块图\n");
-            // 块图 chunk（每块层数）：默认 bf16/fp16=1、fp32=2；可用 SEEDVR_GRAPH_CHUNK 覆盖
-            // （配合 SEEDVR_BLOCK_PREFIX 使用，用于验证大 chunk 是否能摊薄 per-Net 固定开销）
-            int gchunk = (cfg_.precision != 0) ? 1 : 2;
+            // 块图 chunk（每块层数）：默认 2。实测（1080p bf16，见 bench/PERFORMANCE_ANALYSIS.md）
+            // 32 块 → 16 块使 DiT 105.6s → 96.2s（-8.9%，输出与 chunk=1 逐位一致）；
+            // 再加大到 chunk=4 无进一步收益（块变大带来的显存/分配压力抵消）。
+            // 收益来源只是摊薄「每块固定开销」（cmd/Extractor 创建、窗口几何注入），
+            // 与权重加载字节数无关——后者才是 DiT 的最大单项（见 PERFORMANCE_ANALYSIS.md §3）。
+            // 低精度若缺 c{N} 块图则自动回退 chunk=1（旧 32 块图）。
+            // SEEDVR_GRAPH_CHUNK 可覆盖（配合 SEEDVR_BLOCK_PREFIX 做实验）。
+            int gchunk = 2;
             if (const char* gc = getenv("SEEDVR_GRAPH_CHUNK")) gchunk = atoi(gc);
             if (gchunk > 0) fprintf(stderr, "[engine] 图 chunk=%d (prefix=%s)\n", gchunk,
                                     getenv("SEEDVR_BLOCK_PREFIX") ? getenv("SEEDVR_BLOCK_PREFIX") : "(default)");
-            if (!dit_->load_graph(gdir, gchunk))
-                fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
+            if (gchunk > 0 && !dit_->load_graph(gdir, gchunk)) {
+                if (gchunk != 1) {
+                    fprintf(stderr, "[engine] chunk=%d 块图不可用，回退 chunk=1\n", gchunk);
+                    if (!dit_->load_graph(gdir, 1))
+                        fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
+                } else {
+                    fprintf(stderr, "[engine] 图加载失败（继续用旧分块路径）\n");
+                }
+            }
         }
     }
 

@@ -171,6 +171,7 @@ private:
     std::string single_prefix_ = "dit_graph";  // 单 Net param/bin 前缀（默认 dit_graph）
     int single_nlayers_ = 32;          // 单 Net 实际层数（forward_graph 单 Net 分支用）
     std::string graph_dir_;
+    std::string gblock_prefix_;  // 块图文件名前缀（含 chunk 标记，见 dit_graph.cpp block_prefix）
     int gblock_chunk_ = 4;
     int gblock_count_ = 0;      // NB = NUM_LAYERS / chunk（用于文件校验）
     int gblock_run_ = 0;        // forward_graph 实际跑的块数（默认=全部；set_run_blocks 可限制前 n 块）
