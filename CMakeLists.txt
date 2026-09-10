@@ -86,6 +86,14 @@ if(GLSLANG_VALIDATOR)
         COMMENT "Compile awa_init.comp -> models/m5/awa_init.spv"
     )
     add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_copy.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_copy.comp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_copy.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/awa_copy.comp
+        COMMENT "Compile awa_copy.comp -> models/m5/awa_copy.spv"
+    )
+    add_custom_command(
         OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose.spv
         COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/ada_compose.comp
@@ -113,6 +121,7 @@ if(GLSLANG_VALIDATOR)
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_coalesce.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_init.spv
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/awa_copy.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_bf16.spv
         ${CMAKE_CURRENT_SOURCE_DIR}/models/m5/ada_compose_fp16.spv)
@@ -123,7 +132,7 @@ endif()
 add_executable(seedvr2_dit_vk_test src/dit_vk_test.cpp)
 target_link_libraries(seedvr2_dit_vk_test seedvr2_dit)
 # 阶段1 单测：AwaLayer（自定义 ncnn::Layer）vs AwaVk 参考 cos=1.0
-add_executable(seedvr2_test_awa_layer src/test_awa_layer.cpp)
+add_executable(seedvr2_test_awa_layer src/test_awa_layer.cpp src/awa_window.cpp)
 target_link_libraries(seedvr2_test_awa_layer seedvr2_dit)
 # 阶段0 探针：VkMat 连续执行链路（input(VkMat)->extract(VkMat,cmd) 全程 GPU）
 add_executable(seedvr2_probe_vkmat_io src/probe_vkmat_io.cpp)
@@ -192,6 +201,13 @@ target_link_libraries(seedvr2_verify_vae_full ${NCNN_LIBS} OpenMP::OpenMP_CXX -p
 target_compile_options(seedvr2_verify_vae_full PRIVATE -fopenmp -O2)
 target_link_options(seedvr2_verify_vae_full PRIVATE -static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition)
 
+# VAE decode 隔离验证（用 ncnn VaeVk 解码官方 x0 latent）
+add_executable(seedvr2_test_vae_decode src/test_vae_decode.cpp src/vae_vk.cpp src/image_io.cpp)
+target_include_directories(seedvr2_test_vae_decode PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+target_link_libraries(seedvr2_test_vae_decode ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
+target_compile_options(seedvr2_test_vae_decode PRIVATE -fopenmp -O2 -ffp-contract=off)
+target_link_options(seedvr2_test_vae_decode PRIVATE -static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition)
+
 # 窗口生成验证
 add_executable(seedvr2_verify_window src/verify_window.cpp src/awa_window.cpp)
 target_link_libraries(seedvr2_verify_window ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
@@ -204,6 +220,13 @@ target_include_directories(seedvr2_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third
 target_link_libraries(seedvr2_run seedvr2_dit ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
 target_compile_options(seedvr2_run PRIVATE -fopenmp -O2 -ffp-contract=off)
 target_link_options(seedvr2_run PRIVATE -static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition)
+
+# 性能 benchmark：逐阶段计时 + 加载方式/计算位置打印
+add_executable(seedvr2_bench tools/benchmark.cpp src/vae_vk.cpp src/awa_window.cpp src/image_io.cpp src/color_fix.cpp src/seedvr2_engine.cpp)
+target_include_directories(seedvr2_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+target_link_libraries(seedvr2_bench seedvr2_dit ${NCNN_LIBS} OpenMP::OpenMP_CXX -pthread)
+target_compile_options(seedvr2_bench PRIVATE -fopenmp -O2 -ffp-contract=off)
+target_link_options(seedvr2_bench PRIVATE -static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition)
 
 # LAB 校正验证
 add_executable(seedvr2_verify_colorfix src/verify_colorfix.cpp src/color_fix.cpp)
