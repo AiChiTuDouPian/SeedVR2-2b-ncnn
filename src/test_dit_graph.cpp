@@ -182,7 +182,7 @@ int main(int argc, char** argv)
     {
         std::vector<float> wvo_sc = read_raw_f(model_dir + "vid_out_ada_scale.bin");
         std::vector<float> wvo_sh = read_raw_f(model_dir + "vid_out_ada_shift.bin");
-        for (int d = 0; d < DIM; d++) { fin_sc[d] = emb[d * 3 + 1] + wvo_sc[d]; fin_sh[d] = emb[d * 3 + 0] + wvo_sh[d]; }
+        for (int d = 0; d < DIM; d++) { fin_sc[d] = emb[d * 6 + 1] + wvo_sc[d]; fin_sh[d] = emb[d * 6 + 0] + wvo_sh[d]; }  // [FIX 2026-09-10] 6 槽
     }
 
     // ---- GPU 整图：n_layers==32 走分块连续执行（阶段3），否则单 Net（阶段2 1 层验证）----
@@ -234,11 +234,19 @@ int main(int argc, char** argv)
             }
             ncnn::VkCompute cmd(vkdev);
             ncnn::Extractor ex = bn.create_extractor();
+            // FIX: 每个 upload 独立 allocator，避免 ncnn 复用 Input blob buffer
+            std::vector<ncnn::VkBlobAllocator*> blk_up_alloc;
+            int up_seq = 0;
             auto upload = [&](const char* name, const std::vector<float>& data, int dim, int h) {
                 ncnn::Mat m; m.create(dim, h, (size_t)4u, 1);
                 memcpy(m.data, data.data(), data.size() * sizeof(float));
                 ncnn::VkMat vk;
-                cmd.record_upload(m, vk, bn.opt);
+                if (blk_up_alloc.size() <= (size_t)up_seq) blk_up_alloc.resize(up_seq + 1, nullptr);
+                if (!blk_up_alloc[up_seq]) blk_up_alloc[up_seq] = new ncnn::VkBlobAllocator(vkdev);
+                ncnn::Option uopt = bn.opt;
+                uopt.blob_vkallocator = blk_up_alloc[up_seq];
+                up_seq++;
+                cmd.record_upload(m, vk, uopt);
                 ex.input(name, vk);
             };
             if (b == 0) {

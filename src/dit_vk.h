@@ -35,7 +35,8 @@ public:
     // model_dir: 含 *.param/*.bin 的目录（如 models/m5/）
     // fp16_arith: true=GPU 用 fp16 计算（快，略损精度）；false=GPU fp32 计算（慢，贴近 ref）
     // precision: GEMM 存储精度 0=fp32(默认,逐位对齐) 1=fp16 2=bf16
-    bool init(const std::string& model_dir, bool fp16_arith = false, int precision = 0);
+    // use_cpu: true=纯 CPU 推理（关闭 Vulkan compute，跳过 GPU 实例/allocator/AWA Vulkan；走 forward_latent 的 C++ 注意力参考分支）
+    bool init(const std::string& model_dir, bool fp16_arith = false, int precision = 0, bool use_cpu = false);
 
     // 核心前向（输入已是 patchify 后的 token）
     //   vid_patch : (Lv, 132) 展开，33ch patchified 输入
@@ -101,6 +102,12 @@ public:
     // prefix/nlayers 用于指定非默认单 Net（如 dit_4l_bf16 验证小单 Net 机制）
     bool load_single(const std::string& graph_dir, const std::string& prefix = "dit_graph", int nlayers = 32);
     bool graph_ready() const { return graph_loaded_; }
+    // benchmark 用：区分「单 Net 全部常驻」与「分块图」两种加载方式
+    bool is_single_net() const { return single_loaded_; }
+    int  get_num_blocks() const { return gblock_count_; }
+    int  get_block_chunk() const { return gblock_chunk_; }
+    bool is_graph_resident() const { return graph_persistent_; }
+    int  get_precision() const { return precision_; }
     // 低精度图块是否常驻（true=帧间零加载加速；false=逐块释放，大分辨率显存紧张时用）
     void set_graph_persistent(bool p) { graph_persistent_ = p; }
     // 整图前向（全 32 层一次）：vid_patch(Lv,132) + txt(TXT,5120) -> out_sr(Lv,64)
@@ -127,11 +134,14 @@ private:
     ncnn::VulkanDevice* vkdev = nullptr;
     bool fp16_arith = false;
     int precision_ = 0;   // GEMM 存储精度 0=fp32 1=fp16 2=bf16
+    bool use_cpu_ = false;   // true=纯 CPU 推理（关闭 Vulkan compute）
 
     // 全局只 acquire 一次的 blob/staging allocator，所有 ncnn::Net 与 AwaVk 复用同一实例，
     // 避免 acquire_blob_allocator() 池“取走不归还”导致每层新增一个 VkBlobAllocator 而显存泄漏。
     ncnn::VkAllocator* blob_alloc = nullptr;
     ncnn::VkAllocator* staging_alloc = nullptr;
+    // DIAG: 不复用的 blob allocator（VkWeightAllocator），验证 blob 复用是否为 vid_in/ada 错误根因
+    ncnn::VkWeightAllocator* noreuse_alloc_ = nullptr;
 
     // 文件内存缓存：base -> (param文本, model字节)
     std::map<std::string, std::pair<std::string, std::vector<unsigned char>>> fcache;
@@ -154,6 +164,10 @@ private:
     // ---- 阶段3 GPU 整图成员 ----
     std::vector<std::unique_ptr<ncnn::Net>> gblocks_;   // 块 Net（0..NB-1）
     std::unique_ptr<ncnn::Net> single_net_;   // 单 32 层整图（dit_graph.param/bin），10GB 权重常驻，整图 1 次 download
+    // FIX: 每个 upload 一个独立 VkBlobAllocator 实例，避免 ncnn 把分块图的所有 Input blob
+    // 复用同一 buffer（导致 vid_patch 被 txt/ada 覆盖 -> 第 0 层就错）。析构时释放。
+    std::vector<std::vector<ncnn::VkBlobAllocator*>> up_alloc_;
+    int up_seq_ = 0;
     std::string single_prefix_ = "dit_graph";  // 单 Net param/bin 前缀（默认 dit_graph）
     int single_nlayers_ = 32;          // 单 Net 实际层数（forward_graph 单 Net 分支用）
     std::string graph_dir_;

@@ -472,7 +472,8 @@ int main() {
     for (int t = 0; t < Lv; t++) rmsnorm(&vid[t*DIM], DIM, Wvon.data(), &vn[t*DIM]);
     for (int t = 0; t < Lv; t++)
         for (int d = 0; d < DIM; d++) {
-            float sAo = emb[d*3], scAo = emb[d*3+1];
+            // [FIX 2026-09-10] emb 6 槽布局：out 层(attn 组) shift=emb[6d+0], scale=emb[6d+1]
+            float sAo = emb[d*6+0], scAo = emb[d*6+1];
             vn[t*DIM+d] = vn[t*DIM+d]*(scAo + Wvoa_sc[d]) + (sAo + Wvoa_s[d]);
         }
     std::vector<float> vid_out = vid_out_proj.batch(vn, Lv);

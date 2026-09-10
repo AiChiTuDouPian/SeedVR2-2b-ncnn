@@ -185,10 +185,12 @@ int AdaComposeLayer::forward(const std::vector<ncnn::VkMat>& bottom_blobs,
             k = K_MAP[ki];
             emb_stride = 6;
         } else {
-            // final: fin_sc -> emb[d*3+1], fin_sh -> emb[d*3+0]
+            // final: fin_sc/fin_sh 取 out 层(attn 组, l=0) 槽位 —— emb 6 槽布局下
+            // fin_sc(scale) -> emb[d*6+1], fin_sh(shift) -> emb[d*6+0]。
+            // [FIX 2026-09-10] 旧代码 emb_stride=3（仅当 3 槽布局才对；6 槽下 d*3 错位取到 MLP 组）。
             int fi = vi - nlayers_ * 12;
             k = (fi == 0) ? 1 : 0;   // fin_sc: k=1, fin_sh: k=0
-            emb_stride = 3;
+            emb_stride = 6;
         }
         vec_offset = vi * dim_;
 
@@ -196,6 +198,20 @@ int AdaComposeLayer::forward(const std::vector<ncnn::VkMat>& bottom_blobs,
         const bool bf16 = opt.use_bf16_storage && pipe_bf16_;
         const bool f16 = opt.use_fp16_storage && pipe_fp16_;
         out.create(dim_, 1, (bf16 || f16) ? 2u : 4u, opt.blob_vkallocator);
+        // DIAG: 打印 vi 对应的 k 和 top_blobs[vi] 输出前几个值（验证 top_blob 顺序）
+        if (getenv("SEEDVR_DIAG_ADAVI") && vi < 6) {
+            ncnn::VkCompute dcmd(vkdev);
+            ncnn::Mat dv;
+            ncnn::Option do2 = opt; do2.use_packing_layout = false;
+            dcmd.record_download(out, dv, do2);
+            dcmd.submit_and_wait(); dcmd.reset();
+            const unsigned short* hp16 = (const unsigned short*)dv.data;
+            const float* hp32 = (const float*)dv.data;
+            float v0=0,v1=0,v2=0;
+            if (dv.elemsize==4){ v0=hp32[0]; v1=hp32[1]; v2=hp32[2]; }
+            else { unsigned u0=(unsigned)hp16[0]<<16; unsigned u1=(unsigned)hp16[1]<<16; unsigned u2=(unsigned)hp16[2]<<16; memcpy(&v0,&u0,4); memcpy(&v1,&u1,4); memcpy(&v2,&u2,4); }
+            fprintf(stderr, "[adavi] vi=%d k=%d vec_off=%d out[0:3]=%.4f %.4f %.4f\n", vi, k, vec_offset, v0, v1, v2);
+        }
 
         std::vector<ncnn::VkMat> bindings(3);
         bindings[0] = emb;

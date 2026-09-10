@@ -297,9 +297,11 @@ def main():
 
     # ---- vid_out ----
     vid = rmsnorm(vid, Wvon)                       # vid_out_norm (affine)
-    # vid_out_ada 的 layers=["out"] -> emb 按 (1,D,1,3) reshape，只取前 D*3 段
-    emb_out3 = emb[:, :HEAD_D*HEADS*3].reshape(1, HEAD_D*HEADS, 1, 3)
-    sAo = emb_out3[0, :, 0, 0]; scAo = emb_out3[0, :, 0, 1]
+    # [FIX 2026-09-10] vid_out_ada layers=["out"] 取 attn 组(l=0)槽位：out 在 emb(d,l=2,g=3) 布局下与
+    # block attn-in 同组 → shift=emb3[...,0,0]=emb[d*6+0], scale=emb3[...,0,1]=emb[d*6+1]。
+    # ⚠️ 旧代码 emb[:, :D*3]（d*3+g，6 槽下错位取 mlp 组）→ ref_vid_out.bin 全错，verify_dit 一并带错；
+    #    此 fixture 需在下次全量导出时重建（当前 m5/ref_vid_out.bin 为旧错误版）。
+    sAo = emb3[0, :, 0, 0]; scAo = emb3[0, :, 0, 1]
     vid = vid * (scAo + Wvoa_sc) + (sAo + Wvoa_s)   # ada(in): scale/shift
     vid = vid @ Wvout.T + Bvout                     # (L,64)
     save_raw(os.path.join(M5, "ref_vid_out.bin"), vid)

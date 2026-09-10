@@ -4,6 +4,7 @@
 #include <ncnn/net.h>
 #include <ncnn/gpu.h>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -98,7 +99,7 @@ DitVk::~DitVk() {
     // 顺序很关键：net_cache（含权重分配器/pipeline）、graph 块 Net、awa pipeline 都要在 destroy_gpu_instance 之前析构。
     release_graph();                 // 阶段3：析构块 Net（含 AwaLayer pipeline / 权重 VkAllocator）
     net_cache.clear();               // 析构所有缓存的 ncnn::Net -> 释放权重 VkWeightAllocator + pipeline
-    awa.release();                   // 删除 AWA compute pipeline（引用 device）
+    if (vkdev) awa.release();        // 删除 AWA compute pipeline（仅 Vulkan 模式下有效）
     blob_alloc = nullptr;
     staging_alloc = nullptr;
     if (vkdev) ncnn::destroy_gpu_instance();
@@ -109,11 +110,14 @@ void DitVk::reclaim_vram() {
     // 每层所有 Net 已析构、AwaVk 的 VkMat 已出作用域，此时 blob/staging allocator 的 free-list
     // 只含已释放块，clear() 把整块已提交 Vulkan 显存真正还给驱动，避免 32 层累计资源耗尽。
     // （权重 VkWeightAllocator 各 Net 私有，随 Net 析构自动 clear，这里无需处理。）
+    // CPU 模式：allocator 未创建，直接跳过。
     if (blob_alloc)    blob_alloc->clear();
     if (staging_alloc) staging_alloc->clear();
 }
 
 void DitVk::reset_vulkan_device() {
+    // CPU 模式：没有 Vulkan 设备可重置，直接跳过（forward_latent 的块间重置在 CPU 下无意义）。
+    if (use_cpu_) return;
     // 块间重置：先释放所有引用旧设备的资源，再销毁/重建 GPU 实例（全新 VkDevice），
     // 最后重新 acquire allocator 并重建 AWA pipeline。CPU 侧权重（Wvon/Wvoa_*/b*_raw）
     // 与 fcache 字节保留在内存，不重读磁盘，下一次 get_net 从 fcache 重新上传权重到新设备。
@@ -133,16 +137,21 @@ void DitVk::reset_vulkan_device() {
     fprintf(stderr, "[reset] 新 Vulkan 设备就绪 (awa.ready=%d)\n", (int)awa.ready()); fflush(stderr);
 }
 
-bool DitVk::init(const std::string& model_dir, bool fp16_arith, int precision) {
+bool DitVk::init(const std::string& model_dir, bool fp16_arith, int precision, bool use_cpu) {
     dir = model_dir;
     if (dir.empty() || dir.back() != '/') dir += '/';
     this->fp16_arith = fp16_arith;
     this->precision_ = precision;
+    this->use_cpu_ = use_cpu;
 
-    // Vulkan 设备
-    if (ncnn::create_gpu_instance() != 0) { fprintf(stderr, "[FAIL] create_gpu_instance\n"); return false; }
-    vkdev = ncnn::get_gpu_device(0);
-    if (!vkdev) { fprintf(stderr, "[FAIL] get_gpu_device\n"); return false; }
+    // Vulkan 设备（CPU 模式跳过：纯 CPU 推理不需要 GPU 实例/allocator/AWA Vulkan）
+    if (!use_cpu_) {
+        if (ncnn::create_gpu_instance() != 0) { fprintf(stderr, "[FAIL] create_gpu_instance\n"); return false; }
+        vkdev = ncnn::get_gpu_device(0);
+        if (!vkdev) { fprintf(stderr, "[FAIL] get_gpu_device\n"); return false; }
+    } else {
+        fprintf(stderr, "[DitVk] CPU 模式：跳过 Vulkan 实例，GEMM/注意力走 ncnn CPU\n");
+    }
 
     // CPU 侧权重
     Wvon    = read_raw_f(dir + "vid_out_norm_w.bin");
@@ -178,7 +187,8 @@ bool DitVk::init(const std::string& model_dir, bool fp16_arith, int precision) {
             fp16_arith, win_ns.nwin, win_sh.nwin);
 
     // 自定义 Vulkan AWA 模块：优先 dir/awa.spv，否则 cwd/awa.spv
-    {
+    // CPU 模式跳过（AWA 走 forward_latent 的 C++ 参考分支，不依赖 Vulkan AwaVk）
+    if (!use_cpu_) {
         // 全局只 acquire 一次 blob/staging allocator，所有 Net 与 AwaVk 复用，避免显存泄漏
         blob_alloc    = vkdev->acquire_blob_allocator();
         staging_alloc = vkdev->acquire_staging_allocator();
@@ -209,8 +219,8 @@ ncnn::Net* DitVk::get_net(const std::string& base) {
     cache_file(base);
     auto& f = fcache[base];
     std::unique_ptr<ncnn::Net> net(new ncnn::Net);
-    net->set_vulkan_device(vkdev);
-    net->opt.use_vulkan_compute = true;
+    if (vkdev) net->set_vulkan_device(vkdev);   // CPU 模式 vkdev 为空，跳过
+    net->opt.use_vulkan_compute = !use_cpu_;    // CPU 模式：关闭 Vulkan compute，全走 ncnn CPU 算子
     net->opt.use_fp16_arithmetic = fp16_arith;
     // 存储精度（precision_：0=fp32 默认逐位对齐 / 1=fp16 / 2=bf16）。
     // fp16 在真实大激活 >65504 时会溢出 Inf/NaN（历史踩坑）；bf16 指数位同 fp32 范围安全，
@@ -233,7 +243,10 @@ ncnn::Net* DitVk::get_net(const std::string& base) {
 }
 
 void DitVk::evict_nets() {
-    while (net_cache.size() > NET_CACHE_CAP) {
+    // CPU 模式无 GPU 显存压力，缓存全部 Net（约 30 个 ~ 数 GB RAM），避免 forward_latent 反复重载权重；
+    // GPU 模式保持 NET_CACHE_CAP(16) 上限，超出淘汰最久未用者以控制显存。
+    size_t cap = use_cpu_ ? 1024 : NET_CACHE_CAP;
+    while (net_cache.size() > cap) {
         std::string old = net_lru.front();
         net_lru.pop_front();
         auto it = net_cache.find(old);
@@ -303,7 +316,7 @@ void DitVk::awa_forward(int i, const std::vector<float>& vid, const std::vector<
     }
 
     bool force_cpu_awa = (getenv("SEEDVR_FORCE_CPU_AWA") != nullptr);
-    if (awa.ready() && !force_cpu_awa) {
+    if (awa.ready() && !force_cpu_awa && !use_cpu_) {
         // ★ 自定义 Vulkan AWA：partition+qk_norm+RoPE+varlen SDPA+unpartition+coalesce 全在 GPU shader
         std::vector<float> vattn, tattn;
         auto _t0 = std::chrono::high_resolution_clock::now();
@@ -448,6 +461,18 @@ std::vector<float> DitVk::swiglu(const std::string& b, const float* x, int Ln) {
     return lin(b+"_mlp_out", g.data(), Ln, MLP_DIM, DIM);
 }
 
+// [DIAG] block 中间量 dump 的层选择: SEEDVR_DUMP_BLKINT 可为空(=仅 block0) 或逗号分隔层号(如 "0,20,21,30,31")
+static bool diag_blk_layer(int i) {
+    const char* e = getenv("SEEDVR_DUMP_BLKINT");
+    if (!e) return false;
+    if (!*e || !strcmp(e, "1")) return (i == 0);
+    char buf[512], key[16];
+    snprintf(buf, sizeof(buf), ",%s,", e);
+    snprintf(key, sizeof(key), ",%d,", i);
+    return strstr(buf, key) != NULL;
+}
+static std::string diag_bpfx(int i) { return (i == 0) ? std::string("blk0") : ("blk" + std::to_string(i)); }
+
 bool DitVk::forward_latent(const std::vector<float>& vid_in, int Lv,
                            const std::vector<float>& txt_in, int TXT, float timestep,
                            int l0, int l1, bool do_init, bool do_final,
@@ -460,6 +485,15 @@ bool DitVk::forward_latent(const std::vector<float>& vid_in, int Lv,
         fprintf(stderr, "[fl] vid_in_proj / txt_in...\n"); fflush(stderr);
         vid = lin("vid_in_proj", vid_in.data(), Lv, 33*1*2*2, DIM);
         txt = lin("txt_in",      txt_in.data(), TXT, 5120, DIM);
+        // [DIAG] SEEDVR_DUMP_X0=1：dump block0 输入 x0（vid_in_proj/txt_in 输出）→ 与官方 pt_x0_vid.bin 对拍
+        if (getenv("SEEDVR_DUMP_X0")) {
+            FILE* fp = fopen("x0_vid.bin", "wb");
+            if (fp) { fwrite(&Lv, sizeof(int), 1, fp); fwrite(vid.data(), sizeof(float), vid.size(), fp); fclose(fp); }
+            fp = fopen("x0_txt.bin", "wb");
+            if (fp) { fwrite(&TXT, sizeof(int), 1, fp); fwrite(txt.data(), sizeof(float), txt.size(), fp); fclose(fp); }
+            fprintf(stderr, "[dump] x0_vid.bin/x0_txt.bin  Lv=%d TXT=%d timestep=%.6f\n", Lv, TXT, timestep);
+            fflush(stderr);
+        }
     } else {
         vid = vid_in;   // 已是 (Lv, DIM) 残差 latent（上一块传出）
         txt = txt_in;   // 已是 (TXT, DIM) 残差 latent
@@ -476,6 +510,10 @@ bool DitVk::forward_latent(const std::vector<float>& vid_in, int Lv,
         bool dual = (i < MM_LAYERS);
         std::string bv = dual ? ("b"+std::to_string(i)+"_vid") : ("b"+std::to_string(i)+"_all");
         std::string bt = dual ? ("b"+std::to_string(i)+"_txt") : ("b"+std::to_string(i)+"_all");
+        // [FIX 2026-09-10] 末块 is_last_layer = vid_only：官方对 txt 只走 attn_norm+attention，
+        //   ada(attn/mlp)、mlp_norm、SwiGLU 全部对 txt 透传（MMModule vid_only=True）。
+        //   此前 ncnn 在末块仍对 txt 全量执行 ada/gate/SwiGLU(共享 b31_all) → txt 状态错乱 → 末块 attention 注入巨量误差。
+        bool _last = (i == NUM_LAYERS - 1);
         if ((i - l0) % 4 == 0) { fprintf(stderr, "[fl] layer %d/%d\n", i, NUM_LAYERS); fflush(stderr); }
 
         std::vector<float> vid_an(Lv*DIM), txt_an(TXT*DIM);
@@ -487,46 +525,123 @@ bool DitVk::forward_latent(const std::vector<float>& vid_in, int Lv,
                 float shB=vR.attn_shift[d], scB=vR.attn_scale[d], gB=vR.attn_gate[d];
                 vid_an[t*DIM+d] = vid_an[t*DIM+d]*(scA+scB)+(sA+shB);
             }
+        if (!_last) {   // 末块 vid_only：txt 不经过 ada(attn,in)
         for (int t = 0; t < TXT; t++)
             for (int d = 0; d < DIM; d++) {
                 float sA=emb[d*6], scA=emb[d*6+1], gA=emb[d*6+2];
                 float thB=tR.attn_shift[d], tcB=tR.attn_scale[d], tgB=tR.attn_gate[d];
                 txt_an[t*DIM+d] = txt_an[t*DIM+d]*(scA+tcB)+(sA+thB);
             }
+        }
         std::vector<float> vid_at, txt_at;
+        if (diag_blk_layer(i)) {  // [DIAG] 中间量：norm+ada-in 后
+            auto _w = [](const char* fn, int n, const std::vector<float>& v) {
+                FILE* fp = fopen(fn, "wb"); if (!fp) return;
+                fwrite(&n, sizeof(int), 1, fp);
+                fwrite(v.data(), sizeof(float), v.size(), fp); fclose(fp);
+            };
+            std::string _pf = diag_bpfx(i);
+            _w((_pf + "_vid_an.bin").c_str(), Lv, vid_an);
+            _w((_pf + "_txt_an.bin").c_str(), TXT, txt_an);
+        }
         awa_forward(i, vid_an, txt_an, win, vR, tR, vid_at, txt_at);
         for (int t = 0; t < Lv; t++)
             for (int d = 0; d < DIM; d++) { float gA=emb[d*6+2], gB=vR.attn_gate[d]; vid_at[t*DIM+d]*=(gA+gB); }
+        if (!_last) {   // 末块 vid_only：txt 不经过 ada(attn,out) gate
         for (int t = 0; t < TXT; t++)
             for (int d = 0; d < DIM; d++) { float gA=emb[d*6+2], tgB=tR.attn_gate[d]; txt_at[t*DIM+d]*=(gA+tgB); }
+        }
+        if (diag_blk_layer(i)) {  // [DIAG] 中间量：attention 输出（gate 后）
+            auto _w = [](const char* fn, int n, const std::vector<float>& v) {
+                FILE* fp = fopen(fn, "wb"); if (!fp) return;
+                fwrite(&n, sizeof(int), 1, fp);
+                fwrite(v.data(), sizeof(float), v.size(), fp); fclose(fp);
+            };
+            std::string _pf = diag_bpfx(i);
+            _w((_pf + "_vid_at.bin").c_str(), Lv, vid_at);
+            _w((_pf + "_txt_at.bin").c_str(), TXT, txt_at);
+        }
         for (int k = 0; k < Lv*DIM; k++) vid[k] = vid_at[k] + vid[k];
         for (int k = 0; k < TXT*DIM; k++) txt[k] = txt_at[k] + txt[k];
 
         std::vector<float> vid_mn(Lv*DIM), txt_mn(TXT*DIM);
         for (int t = 0; t < Lv; t++) rmsnorm(&vid[t*DIM], DIM, nullptr, &vid_mn[t*DIM]);
-        for (int t = 0; t < TXT; t++) rmsnorm(&txt[t*DIM], DIM, nullptr, &txt_mn[t*DIM]);
+        if (!_last) {   // 末块 vid_only：txt 不经过 mlp_norm/ada(mlp,in)；txt_mn 保持残差(透传)便于 dump 对拍
+            for (int t = 0; t < TXT; t++) rmsnorm(&txt[t*DIM], DIM, nullptr, &txt_mn[t*DIM]);
+        } else {
+            txt_mn = txt;
+        }
         for (int t = 0; t < Lv; t++)
             for (int d = 0; d < DIM; d++) {
                 float sAm=emb[d*6+3], scAm=emb[d*6+4], gAm=emb[d*6+5];
                 float shB=vR.mlp_shift[d], scB=vR.mlp_scale[d], gB=vR.mlp_gate[d];
                 vid_mn[t*DIM+d] = vid_mn[t*DIM+d]*(scAm+scB)+(sAm+shB);
             }
+        if (!_last) {
         for (int t = 0; t < TXT; t++)
             for (int d = 0; d < DIM; d++) {
                 float sAm=emb[d*6+3], scAm=emb[d*6+4], gAm=emb[d*6+5];
                 float thB=tR.mlp_shift[d], tcB=tR.mlp_scale[d], tgB=tR.mlp_gate[d];
                 txt_mn[t*DIM+d] = txt_mn[t*DIM+d]*(scAm+tcB)+(sAm+thB);
             }
+        }
+        if (diag_blk_layer(i)) {  // [DIAG] 中间量：mlp norm+ada-in 后
+            auto _w = [](const char* fn, int n, const std::vector<float>& v) {
+                FILE* fp = fopen(fn, "wb"); if (!fp) return;
+                fwrite(&n, sizeof(int), 1, fp);
+                fwrite(v.data(), sizeof(float), v.size(), fp); fclose(fp);
+            };
+            std::string _pf = diag_bpfx(i);
+            _w((_pf + "_vid_mn.bin").c_str(), Lv, vid_mn);
+            _w((_pf + "_txt_mn.bin").c_str(), TXT, txt_mn);
+        }
         std::vector<float> vid_m = swiglu(bv, vid_mn.data(), Lv);
-        std::vector<float> txt_m = swiglu(bt, txt_mn.data(), TXT);
+        std::vector<float> txt_m;
+        if (!_last) {
+            txt_m = swiglu(bt, txt_mn.data(), TXT);
+        } else {
+            txt_m.assign(TXT*DIM, 0.f);   // 末块 vid_only：txt 无 MLP 分支
+        }
         for (int t = 0; t < Lv; t++)
             for (int d = 0; d < DIM; d++) { float gAm=emb[d*6+5], gB=vR.mlp_gate[d]; vid_m[t*DIM+d]*=(gAm+gB); }
+        if (!_last) {
         for (int t = 0; t < TXT; t++)
             for (int d = 0; d < DIM; d++) { float gAm=emb[d*6+5], gB=tR.mlp_gate[d]; txt_m[t*DIM+d]*=(gAm+gB); }
+        }
+        if (diag_blk_layer(i)) {  // [DIAG] 中间量：mlp 输出（gate 后）
+            auto _w = [](const char* fn, int n, const std::vector<float>& v) {
+                FILE* fp = fopen(fn, "wb"); if (!fp) return;
+                fwrite(&n, sizeof(int), 1, fp);
+                fwrite(v.data(), sizeof(float), v.size(), fp); fclose(fp);
+            };
+            std::string _pf = diag_bpfx(i);
+            _w((_pf + "_vid_am.bin").c_str(), Lv, vid_m);
+            _w((_pf + "_txt_am.bin").c_str(), TXT, txt_m);
+        }
         for (int k = 0; k < Lv*DIM; k++) vid[k] = vid_m[k] + vid[k];
         for (int k = 0; k < TXT*DIM; k++) txt[k] = txt_m[k] + txt[k];
 
         reclaim_vram();   // 本层所有 Net 已析构、AwaVk VkMat 已出作用域，回收激活显存
+
+        // [DIAG] SEEDVR_DUMP_LAYEROUT=<N1,N2,...>：层边界 dump vid 残差流 (Lv,DIM)，
+        //   与官方 nadit pt_block{N}_vid.bin 对拍 → 早期层漂移定位（漂移曲线前 8 层补点）
+        if (const char* lo_env = getenv("SEEDVR_DUMP_LAYEROUT")) {
+            char _tmp[256]; snprintf(_tmp, sizeof(_tmp), ",%s,", lo_env);
+            char _key[16]; snprintf(_key, sizeof(_key), ",%d,", i + 1);
+            if (strstr(_tmp, _key)) {
+                char fn[64]; snprintf(fn, sizeof(fn), "layerout_%d.bin", i + 1);
+                FILE* fp = fopen(fn, "wb");
+                if (fp) {
+                    int _l1 = i + 1;
+                    fwrite(&_l1, sizeof(int), 1, fp);
+                    fwrite(&Lv, sizeof(int), 1, fp);
+                    fwrite(vid.data(), sizeof(float), vid.size(), fp);
+                    fclose(fp);
+                    fprintf(stderr, "[dump] layerout_%d.bin (Lv=%d DIM=%d)\n", i + 1, Lv, DIM);
+                    fflush(stderr);
+                }
+            }
+        }
     }
 
     if (do_final) {
@@ -534,10 +649,26 @@ bool DitVk::forward_latent(const std::vector<float>& vid_in, int Lv,
         for (int t = 0; t < Lv; t++) rmsnorm(&vid[t*DIM], DIM, Wvon.data(), &vn[t*DIM]);
         for (int t = 0; t < Lv; t++)
             for (int d = 0; d < DIM; d++) {
-                float sAo = emb[d*3], scAo = emb[d*3+1];
+                // [FIX 2026-09-10] emb 布局 = 每 d 6 槽 (attn s/sc/g, mlp s/sc/g)。
+                // 官方 vid_out_ada(layers=["out"], mode=in) 取 attn 组槽：scale=emb[6d+1]+Wvoa_sc, shift=emb[6d+0]+Wvoa_s
+                //   （用官方 safetensors 复算 emb + tail 反解验证：corr=0.9998, mean|d|=0.003）
+                // 旧代码误用 emb[d*3+0/1]：6 槽布局下 d*3 只有偶维命中(错位取到 mlp 组) → 尾段调制错 → 64维输出 rel≈40%。
+                float sAo = emb[d*6+0], scAo = emb[d*6+1];
                 vn[t*DIM+d] = vn[t*DIM+d]*(scAo + Wvoa_sc[d]) + (sAo + Wvoa_s[d]);
             }
+        if (getenv("SEEDVR_DUMP_TAIL")) {   // [DIAG] norm+ada 后
+            FILE* fp = fopen("tail_vn.bin", "wb");
+            if (fp) { fwrite(&Lv, sizeof(int), 1, fp); fwrite(&DIM, sizeof(int), 1, fp);
+                      fwrite(vn.data(), sizeof(float), vn.size(), fp); fclose(fp);
+                      fprintf(stderr, "[dump] tail_vn.bin (Lv=%d DIM=%d)\n", Lv, DIM); }
+        }
         sr_out = lin("vid_out_proj", vn.data(), Lv, DIM, 64);
+        if (getenv("SEEDVR_DUMP_TAIL")) {   // [DIAG] proj 后 64 维
+            FILE* fp = fopen("tail_proj.bin", "wb");
+            if (fp) { int W64 = 64; fwrite(&Lv, sizeof(int), 1, fp); fwrite(&W64, sizeof(int), 1, fp);
+                      fwrite(sr_out.data(), sizeof(float), sr_out.size(), fp); fclose(fp);
+                      fprintf(stderr, "[dump] tail_proj.bin (Lv=%d W=64)\n", Lv); }
+        }
         vid_out_latent.clear(); txt_out_latent.clear();
         fprintf(stderr, "[fl] 块末 norm+vid_out_proj ok (layers [%d,%d))\n", l0, hi); fflush(stderr);
     } else {
