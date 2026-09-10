@@ -7,7 +7,7 @@ license: mit
 ByteDance **SeedVR2** 的 NaDiT（2B）扩散 Transformer，在 **ncnn + 自研 Vulkan compute shader** 下的
 C++ 推理权重（**fp32 计算精度**版）。
 
-配套代码 → [AiChiTuDouPian/SeedVR2-ncnn](https://github.com/AiChiTuDouPian/SeedVR2-ncnn)
+配套代码 → [AiChiTuDouPian/SeedVR2-2b-ncnn](https://github.com/AiChiTuDouPian/SeedVR2-2b-ncnn)
 （纯 C++ 端到端推理，自适应窗口注意力 AWA 等算子以自定义 Vulkan compute shader 实现）
 
 ## 选哪个仓库
@@ -36,8 +36,8 @@ models/
 ## 使用
 
 ```bash
-git clone https://github.com/AiChiTuDouPian/SeedVR2-ncnn
-cd SeedVR2-ncnn
+git clone https://github.com/AiChiTuDouPian/SeedVR2-2b-ncnn
+cd SeedVR2-2b-ncnn
 
 # 下载权重（约 17.5 GB）
 hf download xxzigou/SeedVR2-2b-NCNN --local-dir .

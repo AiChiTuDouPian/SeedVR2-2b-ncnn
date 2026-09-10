@@ -1,4 +1,4 @@
-# SeedVR2-ncnn vs PyTorch 精度对比报告
+# SeedVR2-2b-ncnn vs PyTorch 精度对比报告
 
 > 日期：2026-09-10 ｜ 平台：RTX 5060 Ti 16GB ｜ ncnn Vulkan vs 官方 PyTorch（ComfyUI-SeedVR2 VideoUpscaler）
 > 输入：**椎名真白** `input/椎名真白.png`（1131×960，非官方示例图）｜ seed 42

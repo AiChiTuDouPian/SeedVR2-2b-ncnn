@@ -1,4 +1,4 @@
-# SeedVR2-ncnn
+# SeedVR2-2b-ncnn
 
 SeedVR2 (NaDiT 3B) 视频/图像超分的 **自包含 C++ ncnn + Vulkan** 推理实现。
 

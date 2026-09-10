@@ -1,5 +1,5 @@
 // tools/benchmark.cpp
-// SeedVR2-ncnn 推理性能 benchmark。
+// SeedVR2-2b-ncnn 推理性能 benchmark。
 // 逐阶段计时（预处理 / VAE encode / DiT / VAE decode / 后处理），
 // 并打印模型加载方式（单 Net 全部加载 vs 分块图 vs 旧分块路径）与计算位置（CPU/GPU）。
 //

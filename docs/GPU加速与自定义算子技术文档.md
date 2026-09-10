@@ -1,4 +1,4 @@
-# SeedVR2-ncnn GPU 加速技术文档：工程实现与自定义算子
+# SeedVR2-2b-ncnn GPU 加速技术文档：工程实现与自定义算子
 
 > 项目：`F:/Seedvr2/seedvr2-ncnn` ｜ 日期：2026-09-10
 > 平台基线：RTX 5060 Ti 16GB ｜ ncnn（自编译，Vulkan 开启）+ Vulkan SDK（glslangValidator）
@@ -311,6 +311,6 @@ fp16 存储时 ncnn `VkTransfer` 上传把 fp32 逐元素压成 half 写入 buff
 
 ## 9. 结论
 
-- SeedVR2-ncnn 的 GPU 加速核心 = **合并计算图消除 CPU↔GPU 往返 + 低 16 位存储与 fp32 累加 + Tensor Core**，AWA/AdaCompose/Cast 为三个自研 Vulkan 自定义算子族，全部避开 ncnn 张量层约定、以 flat-float 显式布局实现，并对齐 CPU/官方参考。
+- SeedVR2-2b-ncnn 的 GPU 加速核心 = **合并计算图消除 CPU↔GPU 往返 + 低 16 位存储与 fp32 累加 + Tensor Core**，AWA/AdaCompose/Cast 为三个自研 Vulkan 自定义算子族，全部避开 ncnn 张量层约定、以 flat-float 显式布局实现，并对齐 CPU/官方参考。
 - 精度档位选择：**对拍/验证用 fp32（逐位）；生产提速用 bf16（≈fp32 精度）**；fp16 是「全链 16 位存储」的极端档，速度不占优（与 bf16 同受块间 IO 支配）且精度墙明显，仅作研究。
 - 下一步最高收益动作：bf16 块图 chunk 1→2/4 合并（预期 DiT 再快 35-50%），随后视需要处理 CPU 内存墙。

@@ -1,4 +1,4 @@
-# SeedVR2-ncnn 性能分析报告
+# SeedVR2-2b-ncnn 性能分析报告
 
 > 平台：NVIDIA GeForce RTX 5060 Ti 16GB ｜ ncnn Vulkan ｜ Windows / MinGW-w64
 > 系统内存 **15.8 GB**（对 CPU 路径是硬约束，见 §4）

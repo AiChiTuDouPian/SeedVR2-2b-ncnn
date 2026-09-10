@@ -1,4 +1,4 @@
-// dit_vk_run.cpp — SeedVR2-ncnn 命令行入口（端到端 DiT 加速）
+// dit_vk_run.cpp — SeedVR2-2b-ncnn 命令行入口（端到端 DiT 加速）
 // 用法:
 //   seedvr2_dit_vk_run <workdir> <modeldir> [--fp16]
 //   workdir: 含 vid_grid.bin / txt.bin / params.txt / win_ns.bin / win_sh.bin
