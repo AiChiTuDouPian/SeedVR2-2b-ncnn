@@ -13,7 +13,8 @@ public:
     // modeldir: 含 vae_enc1/enc2/dec1/dec2/attn_enc/attn_dec 的 *.param/*.bin 目录
     // H_mid/W_mid: mid 分辨率 = 输入 H/8、W/8（attention 子图 Reshape 用）
     // precision: 存储精度 0=fp32(默认) 1=fp16 2=bf16
-    bool init(const std::string& modeldir, int H_mid, int W_mid, int precision = 0);
+    // use_cpu: true=纯 CPU 推理（关闭 Vulkan compute）
+    bool init(const std::string& modeldir, int H_mid, int W_mid, int precision = 0, bool use_cpu = false);
 
     // encode: img (w=W,h=H,c=3, [0,1] 已归一化到 [-1,1]) -> mean/logvar (w=W/8,h=H/8,c=16)
     // （含 group_norm+silu+conv_out；采样（mean+std*randn）由调用方做）
@@ -27,5 +28,6 @@ public:
 private:
     ncnn::Net enc1_, enc2_, dec1_, dec2_, attn_enc_, attn_dec_;
     int precision_ = 0;   // 0=fp32 1=fp16 2=bf16
+    bool use_cpu_ = false;   // true=纯 CPU 推理（关闭 Vulkan compute）
     bool ready_ = false;
 };

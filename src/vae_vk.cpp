@@ -8,8 +8,8 @@ VaeVk::~VaeVk() {
     // ncnn::Net 析构自动释放 Vulkan 资源
 }
 
-static void cfg_net(ncnn::Net& net, int precision) {
-    net.opt.use_vulkan_compute = true;
+static void cfg_net(ncnn::Net& net, int precision, bool use_cpu) {
+    net.opt.use_vulkan_compute = !use_cpu;   // CPU 模式关闭 Vulkan compute
     net.opt.use_winograd_convolution = false;  // 关 winograd 排除精度差异
     // 存储精度：0=fp32(默认逐位对齐) 1=fp16 2=bf16。bf16 范围同 fp32 不溢出、tensor core 加速。
     net.opt.use_fp16_storage = (precision == 1);
@@ -19,8 +19,8 @@ static void cfg_net(ncnn::Net& net, int precision) {
 }
 
 // 加载固定子图（enc1/enc2/dec1/dec2）
-static bool load_sub(ncnn::Net& net, const std::string& param_path, const std::string& bin_path, int precision) {
-    cfg_net(net, precision);
+static bool load_sub(ncnn::Net& net, const std::string& param_path, const std::string& bin_path, int precision, bool use_cpu) {
+    cfg_net(net, precision, use_cpu);
     if (net.load_param(param_path.c_str()) != 0) {
         fprintf(stderr, "[VaeVk] load_param %s 失败\n", param_path.c_str());
         return false;
@@ -33,8 +33,8 @@ static bool load_sub(ncnn::Net& net, const std::string& param_path, const std::s
 }
 
 // 动态生成 attention 子图 param（Reshape 的 W/H 依赖 mid 分辨率），加载固定 bin
-static bool load_attn(ncnn::Net& net, const std::string& bin_path, const std::string& prefix, int H, int W, int precision) {
-    cfg_net(net, precision);
+static bool load_attn(ncnn::Net& net, const std::string& bin_path, const std::string& prefix, int H, int W, int precision, bool use_cpu) {
+    cfg_net(net, precision, use_cpu);
     char param[2048];
     snprintf(param, sizeof(param),
              "7767517\n"
@@ -61,23 +61,24 @@ static bool load_attn(ncnn::Net& net, const std::string& bin_path, const std::st
     return true;
 }
 
-bool VaeVk::init(const std::string& modeldir, int H_mid, int W_mid, int precision) {
+bool VaeVk::init(const std::string& modeldir, int H_mid, int W_mid, int precision, bool use_cpu) {
     std::string md = modeldir;
     if (md.back() != '/' && md.back() != '\\') md += '/';
     precision_ = precision;
+    use_cpu_ = use_cpu;
 
-    fprintf(stderr, "[VaeVk] 加载 enc1...\n"); fflush(stderr);
-    if (!load_sub(enc1_, md + "vae_enc1.param", md + "vae_enc1.bin", precision)) return false;
+    fprintf(stderr, "[VaeVk] 加载 enc1... (%s)\n", use_cpu ? "CPU" : "Vulkan"); fflush(stderr);
+    if (!load_sub(enc1_, md + "vae_enc1.param", md + "vae_enc1.bin", precision, use_cpu_)) return false;
     fprintf(stderr, "[VaeVk] 加载 enc2...\n"); fflush(stderr);
-    if (!load_sub(enc2_, md + "vae_enc2.param", md + "vae_enc2.bin", precision)) return false;
+    if (!load_sub(enc2_, md + "vae_enc2.param", md + "vae_enc2.bin", precision, use_cpu_)) return false;
     fprintf(stderr, "[VaeVk] 加载 dec1...\n"); fflush(stderr);
-    if (!load_sub(dec1_, md + "vae_dec1.param", md + "vae_dec1.bin", precision)) return false;
+    if (!load_sub(dec1_, md + "vae_dec1.param", md + "vae_dec1.bin", precision, use_cpu_)) return false;
     fprintf(stderr, "[VaeVk] 加载 dec2...\n"); fflush(stderr);
-    if (!load_sub(dec2_, md + "vae_dec2.param", md + "vae_dec2.bin", precision)) return false;
+    if (!load_sub(dec2_, md + "vae_dec2.param", md + "vae_dec2.bin", precision, use_cpu_)) return false;
     fprintf(stderr, "[VaeVk] 加载 attn_enc...\n"); fflush(stderr);
-    if (!load_attn(attn_enc_, md + "vae_attn_enc.bin", "vae_attn_enc", H_mid, W_mid, precision)) return false;
+    if (!load_attn(attn_enc_, md + "vae_attn_enc.bin", "vae_attn_enc", H_mid, W_mid, precision, use_cpu_)) return false;
     fprintf(stderr, "[VaeVk] 加载 attn_dec...\n"); fflush(stderr);
-    if (!load_attn(attn_dec_, md + "vae_attn_dec.bin", "vae_attn_dec", H_mid, W_mid, precision)) return false;
+    if (!load_attn(attn_dec_, md + "vae_attn_dec.bin", "vae_attn_dec", H_mid, W_mid, precision, use_cpu_)) return false;
 
     ready_ = true;
     fprintf(stderr, "[VaeVk] init ok (H_mid=%d W_mid=%d)\n", H_mid, W_mid);

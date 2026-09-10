@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <numeric>
 #include <cstring>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace colorfix {
 
@@ -14,6 +17,7 @@ static void wavelet_blur(const float* src, float* dst, int W, int H, int radius)
         {0.125f,  0.25f,  0.125f},
         {0.0625f, 0.125f, 0.0625f},
     };
+    #pragma omp parallel for schedule(static)
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
             float acc = 0.0f;
@@ -51,8 +55,10 @@ static void wavelet_reconstruct(const float* content, const float* style, int W,
                                 float* result) {
     const int n = W * H;
     std::vector<float> ch, cl, sh, sl;
+    // 小波分解/重构本身串行（cur/blur 迭代依赖）；三通道在调用方并行
     wavelet_decompose(content, W, H, ch, cl);
     wavelet_decompose(style, W, H, sh, sl);
+    #pragma omp parallel for schedule(static)
     for (int j = 0; j < n; j++) {
         float v = ch[j] + sl[j];
         result[j] = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
@@ -127,6 +133,7 @@ static void histogram_match(const float* src, const float* ref, int n, float* ma
     for (int i = 0; i < n; i++) rank[order[i]] = i;
     std::vector<float> ref_sorted(ref, ref + n);
     std::sort(ref_sorted.begin(), ref_sorted.end());
+    #pragma omp parallel for schedule(static)
     for (int j = 0; j < n; j++) matched[j] = ref_sorted[rank[j]];
 }
 
@@ -135,13 +142,16 @@ void lab_color_transfer(const float* content, const float* style, int H, int W,
     const int n = H * W;
 
     // ---- step 1: 小波重构（content 细节 + style 颜色）----
+    // 三通道完全独立，可并行（每通道含多次 wavelet_blur 的 omp 并行）
     std::vector<float> base(3 * n);
+    #pragma omp parallel for schedule(static)
     for (int c = 0; c < 3; c++)
         wavelet_reconstruct(content + c * n, style + c * n, W, H, base.data() + c * n);
 
     // ---- step 2: 转 [0,1] ----
     auto to01 = [&](const float* src) {
         std::vector<float> v(3 * n);
+        #pragma omp parallel for schedule(static)
         for (int i = 0; i < 3 * n; i++) {
             float t = (src[i] + 1.0f) * 0.5f;
             v[i] = t < 0 ? 0 : (t > 1 ? 1 : t);
@@ -153,6 +163,7 @@ void lab_color_transfer(const float* content, const float* style, int H, int W,
 
     // ---- step 3: RGB -> LAB ----
     std::vector<float> content_lab(3 * n), style_lab(3 * n);
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; i++) {
         float L, a, b;
         rgb2lab(content01[i], content01[n + i], content01[2 * n + i], L, a, b);
@@ -162,12 +173,20 @@ void lab_color_transfer(const float* content, const float* style, int H, int W,
     }
 
     // ---- step 4: a*/b* 直方图匹配；L* 加权混合 ----
+    // 三通道各自独立排序+匹配，可并行（通道间互不依赖）
     std::vector<float> matched_a(n), matched_b(n), matched_L(n);
-    histogram_match(content_lab.data() + n, style_lab.data() + n, n, matched_a.data());       // a*
-    histogram_match(content_lab.data() + 2 * n, style_lab.data() + 2 * n, n, matched_b.data()); // b*
-    histogram_match(content_lab.data(), style_lab.data(), n, matched_L.data());               // L*
+    #pragma omp parallel sections
+    {
+        #pragma omp section
+        histogram_match(content_lab.data() + n, style_lab.data() + n, n, matched_a.data());       // a*
+        #pragma omp section
+        histogram_match(content_lab.data() + 2 * n, style_lab.data() + 2 * n, n, matched_b.data()); // b*
+        #pragma omp section
+        histogram_match(content_lab.data(), style_lab.data(), n, matched_L.data());               // L*
+    }
 
     std::vector<float> result_lab(3 * n);
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; i++) {
         result_lab[i] = content_lab[i] * luminance_weight + matched_L[i] * (1.0f - luminance_weight);
         result_lab[n + i] = matched_a[i];
@@ -176,12 +195,14 @@ void lab_color_transfer(const float* content, const float* style, int H, int W,
 
     // ---- step 5: LAB -> RGB ----
     std::vector<float> result_rgb(3 * n);
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; i++) {
         lab2rgb(result_lab[i], result_lab[n + i], result_lab[2 * n + i],
                 result_rgb[i], result_rgb[n + i], result_rgb[2 * n + i]);
     }
 
     // ---- step 6: 转 [-1,1] ----
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < 3 * n; i++) result[i] = result_rgb[i] * 2.0f - 1.0f;
 }
 
