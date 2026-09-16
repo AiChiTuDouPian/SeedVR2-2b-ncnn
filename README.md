@@ -41,18 +41,6 @@ cmake --build build-cmake -j
 三个仓库按精度分开，**每个都自包含**（`models/m5` + `models/m6_vae` + 该精度的块图），
 下载任一个即可直接运行：
 
-| 精度 | 仓库 | 体积 | 引擎参数 |
-|---|---|---:|---|
-| fp32 | [`xxzigou/SeedVR2-2b-NCNN`](https://huggingface.co/xxzigou/SeedVR2-2b-NCNN) | 17.5 GB | 默认（逐位对齐基准，最慢） |
-| **bf16** | [`xxzigou/seedVR2-ncnn-bf16`](https://huggingface.co/xxzigou/seedVR2-ncnn-bf16) | 36.8 GB | `--bf16`（**推荐**：范围安全，逐层 cos ≥ 0.9993，比 fp32 快 1.7×） |
-| fp16 | [`xxzigou/seedVR2-ncnn-fp16`](https://huggingface.co/xxzigou/seedVR2-ncnn-fp16) | 17.5 GB | `--fp16`（最快但大激活会溢出，第 30 层 cos 仅 0.90） |
-
-```bash
-# 只拉跑推理必需的部分（bf16 仓库里的 c1/c4 块图变体可不下载）
-hf download xxzigou/seedVR2-ncnn-bf16 --local-dir . \
-  --include "models/m5/*" "models/m6_vae/*" "models/m5_graph/dit_block_bf16_c2_*"
-```
-
 > `models/m5` 是三种精度**共用**的基础权重（DiT 逐层 + 自定义 shader `*.spv`），
 > 只有 `models/m5_graph/` 下的块图区分精度。bf16 仓库另含 `c1`（32 块，缺 `c2` 时的回退路径）
 > 与 `c4`（8 块，实测无收益）变体；只下 `c2`（16 块，引擎默认）即可。
